@@ -1,0 +1,6 @@
+# OpenSearch Python 客户端
+opensearch-py>=2.0.0
+
+# 环境变量加载（可选）
+python-dotenv>=1.0.0
+
