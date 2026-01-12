@@ -11,8 +11,8 @@ import shutil
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from utils.ffmpeg.providers.exceptions import FFmpegError
-from utils.ffmpeg.models.models import (
+from .exceptions import FFmpegError
+from ..models.models import (
     VideoInfo,
     VideoCompareResult,
     ConcatResult,

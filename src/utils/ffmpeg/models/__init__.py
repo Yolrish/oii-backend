@@ -1,7 +1,7 @@
 """
 FFmpeg 数据模型模块
 """
-from utils.ffmpeg.models.models import (
+from .models import (
     ConcatMode,
     VideoInfo,
     VideoCompareResult,

@@ -46,10 +46,10 @@ FFmpeg 工具模块
 """
 
 # 配置
-from utils.ffmpeg.configs.config import FFmpegConfig, default_config
+from .configs.config import FFmpegConfig, default_config
 
 # 模型
-from utils.ffmpeg.models.models import (
+from .models.models import (
     ConcatMode,
     VideoInfo,
     VideoCompareResult,
@@ -58,11 +58,11 @@ from utils.ffmpeg.models.models import (
 )
 
 # 客户端
-from utils.ffmpeg.providers.exceptions import FFmpegError
-from utils.ffmpeg.providers.client import FFmpegClient, FFmpegClientConfig
+from .providers.exceptions import FFmpegError
+from .providers.client import FFmpegClient, FFmpegClientConfig
 
 # 服务
-from utils.ffmpeg.services.service import (
+from .services.service import (
     FFmpegService,
     get_default_service,
     create_ffmpeg_service,

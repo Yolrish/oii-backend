@@ -4,15 +4,15 @@ FFmpeg Service
 """
 from typing import List, Optional
 
-from utils.ffmpeg.configs.config import FFmpegConfig
-from utils.ffmpeg.models.models import (
+from ..configs.config import FFmpegConfig
+from ..models.models import (
     VideoInfo,
     VideoCompareResult,
     ConcatResult,
     ConcatMode,
     MixAudioResult,
 )
-from utils.ffmpeg.providers.client import FFmpegClient, FFmpegClientConfig
+from ..providers.client import FFmpegClient, FFmpegClientConfig
 
 
 class FFmpegService:
