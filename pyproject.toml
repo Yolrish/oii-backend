@@ -1,0 +1,55 @@
+[project]
+name = "ai-backend"
+version = "1.0.0"
+description = "AI 后端服务 API"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Web 框架
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    # OpenSearch 客户端（日志模块）
+    "opensearch-py>=2.0.0",
+    # 环境变量加载
+    "python-dotenv>=1.0.0",
+    # 数据验证
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "httpx>=0.26.0",
+    "ruff>=0.1.0",
+]
+
+[tool.uv]
+# 应用模式：不作为可安装包构建，仅管理依赖
+package = false
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # 行长度由 line-length 控制
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src", "api", "core", "middleware", "models", "packages", "repositories", "schemas", "services", "utils"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
