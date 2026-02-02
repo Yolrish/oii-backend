@@ -8,7 +8,7 @@ Log 日志服务包
 - 支持单条和批量写入
 
 使用示例：
-    from log import LogService, OpenSearchProvider
+    from packages.log import LogService, OpenSearchProvider
     
     # 获取服务并注册 Provider
     service = LogService()
@@ -22,7 +22,7 @@ Log 日志服务包
     service.error("Error", service="api", providers=["opensearch"])
 
 快捷方式：
-    from log import create_default_log_service
+    from packages.log import create_default_log_service
     
     service = create_default_log_service()  # 自动注册 OpenSearch
     service.init()

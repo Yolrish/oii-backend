@@ -8,7 +8,7 @@ FFmpeg 工具模块
 - 视频混音（添加背景音乐）
 
 使用示例：
-    from utils.ffmpeg import create_ffmpeg_service
+    from packages.ffmpeg import create_ffmpeg_service
     
     # 创建服务（推荐）
     service = create_ffmpeg_service()
@@ -31,12 +31,12 @@ FFmpeg 工具模块
     )
 
 使用默认实例：
-    from utils.ffmpeg import get_default_service
+    from packages.ffmpeg import get_default_service
     
     service = get_default_service()  # 懒加载的默认实例
 
 自定义配置：
-    from utils.ffmpeg import FFmpegConfig, create_ffmpeg_service
+    from packages.ffmpeg import FFmpegConfig, create_ffmpeg_service
     
     config = FFmpegConfig(
         video_codec="libx265",
