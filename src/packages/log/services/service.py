@@ -1,10 +1,12 @@
 """
 LogService 模块
 
-统一的日志服务入口，整合多个日志 Provider
+统一的日志服务入口，整合多个日志 Provider，支持 Web 后端高并发场景
 """
-
-from typing import Optional, List, Dict, Tuple, Union
+import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from typing import Optional, List, Dict, Tuple
 
 from ..configs.config import LogServiceConfig
 from ..models.models import LogEntry, LogLevel
@@ -14,37 +16,49 @@ from ..providers import OpenSearchProvider, OpenSearchConfig
 
 class LogService:
     """
-    统一日志服务（单例模式）
+    统一日志服务（单例模式，线程安全）
     
-    整合多个日志 Provider，通过参数控制使用哪些 Provider。
+    整合多个日志 Provider，支持高并发场景。
+    
+    特性：
+    - 线程安全：写入操作使用锁保护
+    - 异步支持：提供 async 版本方法
+    - 批量写入：支持批量日志写入
     
     使用示例：
+        # 同步使用
         service = LogService()
         service.register_provider(OpenSearchProvider())
         service.init()
-        
-        # 使用所有已注册的 Provider
         service.info("Hello", service="api")
         
-        # 指定使用特定 Provider
-        service.error("Error", providers=["opensearch"])
+        # 异步使用（FastAPI）
+        await service.info_async("Hello", service="api")
     """
     
     _instance: Optional["LogService"] = None
     _initialized: bool = False
+    _lock = threading.Lock()  # 类级别锁，保护单例创建
     
     def __new__(cls, config: Optional[LogServiceConfig] = None):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
         return cls._instance
     
     def __init__(self, config: Optional[LogServiceConfig] = None):
-        if LogService._initialized:
-            return
-        
-        self.config = config or LogServiceConfig()
-        self._providers: Dict[str, BaseLogProvider] = {}
-        LogService._initialized = True
+        with LogService._lock:
+            if LogService._initialized:
+                return
+            
+            self.config = config or LogServiceConfig()
+            self._providers: Dict[str, BaseLogProvider] = {}
+            self._write_lock = threading.Lock()  # 实例级别锁，保护写入操作
+            self._thread_pool = ThreadPoolExecutor(
+                max_workers=2,
+                thread_name_prefix="log_"
+            )
+            LogService._initialized = True
     
     @classmethod
     def get_instance(cls, config: Optional[LogServiceConfig] = None) -> "LogService":
@@ -56,10 +70,11 @@ class LogService:
     @classmethod
     def reset_instance(cls) -> None:
         """重置单例（用于测试）"""
-        if cls._instance is not None:
-            cls._instance.close()
-        cls._instance = None
-        cls._initialized = False
+        with cls._lock:
+            if cls._instance is not None:
+                cls._instance.close()
+            cls._instance = None
+            cls._initialized = False
     
     # ==================== Provider 管理 ====================
     
@@ -72,7 +87,8 @@ class LogService:
         Returns:
             self（支持链式调用）
         """
-        self._providers[provider.name] = provider
+        with self._write_lock:
+            self._providers[provider.name] = provider
         return self
     
     def unregister_provider(self, name: str) -> bool:
@@ -84,10 +100,11 @@ class LogService:
         Returns:
             是否成功
         """
-        if name in self._providers:
-            self._providers[name].close()
-            del self._providers[name]
-            return True
+        with self._write_lock:
+            if name in self._providers:
+                self._providers[name].close()
+                del self._providers[name]
+                return True
         return False
     
     def get_provider(self, name: str) -> Optional[BaseLogProvider]:
@@ -130,7 +147,7 @@ class LogService:
         targets = self._get_target_providers(providers) if providers else list(self._providers.values())
         return {p.name: p.is_ready() for p in targets}
     
-    # ==================== 日志写入 ====================
+    # ==================== 同步日志写入 ====================
     
     def log(
         self,
@@ -141,20 +158,14 @@ class LogService:
         **kwargs
     ) -> Dict[str, Optional[str]]:
         """
-        写入单条日志
+        写入单条日志（同步）
         
         Args:
             message: 日志消息
             level: 日志级别
             service: 服务类别
             providers: 指定使用哪些 Provider，为 None 时使用默认配置
-            **kwargs: 其他可选参数：
-                - user: 用户名
-                - user_id: 用户 ID
-                - status_code: HTTP 状态码
-                - ip: IP 地址
-                - metadata: 扩展元数据
-                - index: 目标索引（用于 OpenSearch，不指定则使用默认索引）
+            **kwargs: 其他可选参数
         Returns:
             各 Provider 的写入结果（文档 ID 或 None）
         """
@@ -162,27 +173,28 @@ class LogService:
         targets = self._get_target_providers(providers)
         
         results = {}
-        for provider in targets:
-            try:
-                results[provider.name] = provider.write(entry)
-            except Exception as e:
-                if not self.config.fail_silently:
-                    raise
-                results[provider.name] = None
-                print(f"[{provider.name}] 写入失败: {e}")
+        with self._write_lock:
+            for provider in targets:
+                try:
+                    results[provider.name] = provider.write(entry)
+                except Exception as e:
+                    if not self.config.fail_silently:
+                        raise
+                    results[provider.name] = None
+                    print(f"[{provider.name}] 写入失败: {e}")
         
         return results
     
     def info(self, message: str, service: str = "default", **kwargs) -> Dict[str, Optional[str]]:
-        """写入普通日志"""
+        """写入普通日志（同步）"""
         return self.log(message, LogLevel.LOG, service, **kwargs)
     
     def warn(self, message: str, service: str = "default", **kwargs) -> Dict[str, Optional[str]]:
-        """写入警告日志"""
+        """写入警告日志（同步）"""
         return self.log(message, LogLevel.WARN, service, **kwargs)
     
     def error(self, message: str, service: str = "default", **kwargs) -> Dict[str, Optional[str]]:
-        """写入错误日志"""
+        """写入错误日志（同步）"""
         return self.log(message, LogLevel.ERROR, service, **kwargs)
     
     def bulk_log(
@@ -191,7 +203,7 @@ class LogService:
         providers: Optional[List[str]] = None
     ) -> Dict[str, Tuple[int, int]]:
         """
-        批量写入日志
+        批量写入日志（同步）
         
         Args:
             entries: 日志条目列表
@@ -202,29 +214,98 @@ class LogService:
         targets = self._get_target_providers(providers)
         
         results = {}
-        for provider in targets:
-            try:
-                results[provider.name] = provider.bulk_write(entries)
-            except Exception as e:
-                if not self.config.fail_silently:
-                    raise
-                results[provider.name] = (0, len(entries))
-                print(f"[{provider.name}] 批量写入失败: {e}")
+        with self._write_lock:
+            for provider in targets:
+                try:
+                    results[provider.name] = provider.bulk_write(entries)
+                except Exception as e:
+                    if not self.config.fail_silently:
+                        raise
+                    results[provider.name] = (0, len(entries))
+                    print(f"[{provider.name}] 批量写入失败: {e}")
         
         return results
+    
+    # ==================== 异步日志写入（推荐在 Web 后端使用）====================
+    
+    async def log_async(
+        self,
+        message: str,
+        level: LogLevel = LogLevel.LOG,
+        service: str = "default",
+        providers: Optional[List[str]] = None,
+        **kwargs
+    ) -> Dict[str, Optional[str]]:
+        """
+        写入单条日志（异步）
+        
+        Args:
+            message: 日志消息
+            level: 日志级别
+            service: 服务类别
+            providers: 指定使用哪些 Provider
+            **kwargs: 其他可选参数
+        Returns:
+            各 Provider 的写入结果
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._thread_pool,
+            lambda: self.log(message, level, service, providers, **kwargs)
+        )
+    
+    async def info_async(self, message: str, service: str = "default", **kwargs) -> Dict[str, Optional[str]]:
+        """写入普通日志（异步）"""
+        return await self.log_async(message, LogLevel.LOG, service, **kwargs)
+    
+    async def warn_async(self, message: str, service: str = "default", **kwargs) -> Dict[str, Optional[str]]:
+        """写入警告日志（异步）"""
+        return await self.log_async(message, LogLevel.WARN, service, **kwargs)
+    
+    async def error_async(self, message: str, service: str = "default", **kwargs) -> Dict[str, Optional[str]]:
+        """写入错误日志（异步）"""
+        return await self.log_async(message, LogLevel.ERROR, service, **kwargs)
+    
+    async def bulk_log_async(
+        self,
+        entries: List[LogEntry],
+        providers: Optional[List[str]] = None
+    ) -> Dict[str, Tuple[int, int]]:
+        """
+        批量写入日志（异步）
+        
+        Args:
+            entries: 日志条目列表
+            providers: 指定使用哪些 Provider
+        Returns:
+            各 Provider 的写入结果
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            self._thread_pool,
+            lambda: self.bulk_log(entries, providers)
+        )
     
     # ==================== 生命周期 ====================
     
     def close(self) -> None:
-        """关闭所有 Provider"""
-        for provider in self._providers.values():
-            provider.close()
-        self._providers.clear()
+        """关闭所有 Provider 和线程池"""
+        with self._write_lock:
+            for provider in self._providers.values():
+                provider.close()
+            self._providers.clear()
+        self._thread_pool.shutdown(wait=False)
     
     def __enter__(self):
         return self
     
     def __exit__(self, *args):
+        pass  # 单例模式下不关闭
+    
+    async def __aenter__(self):
+        return self
+    
+    async def __aexit__(self, *args):
         pass  # 单例模式下不关闭
 
 
@@ -251,4 +332,3 @@ def create_default_log_service(
     service = LogService(service_config)
     service.register_provider(OpenSearchProvider(opensearch_config))
     return service
-

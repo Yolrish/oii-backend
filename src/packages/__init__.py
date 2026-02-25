@@ -4,6 +4,7 @@ Packages 模块包
 包含独立的功能模块：
 - ffmpeg: 视频处理工具（视频信息、拼接、混音等）
 - log: 日志服务（支持多 Provider 的日志写入）
+- shell: 命令行执行器（支持并发、实时输出）
 
 使用示例：
     # FFmpeg 模块
@@ -16,6 +17,13 @@ Packages 模块包
     service = create_default_log_service()
     service.init()
     service.info("Hello")
+    
+    # Shell 模块
+    from packages.shell import run, ShellExecutor
+    result = run("git status")
+    # 或使用执行器
+    executor = ShellExecutor()
+    result = executor.run("echo hello", on_stdout=print)
 """
 
 # FFmpeg 模块
@@ -55,6 +63,29 @@ from .log import (
     OpenSearchConfig,
 )
 
+# Shell 模块
+from .shell import (
+    # 配置
+    ShellConfig,
+    # 模型
+    CommandResult,
+    StreamType,
+    StreamLine,
+    # 异常
+    ShellError,
+    ShellTimeoutError,
+    ShellExecutionError,
+    # 执行器
+    ShellExecutor,
+    # 服务
+    ShellService,
+    get_default_service as get_shell_service,
+    create_shell_service,
+    # 快捷函数
+    run as shell_run,
+    run_async as shell_run_async,
+)
+
 __all__ = [
     # ===== FFmpeg =====
     # 配置
@@ -87,6 +118,26 @@ __all__ = [
     # Providers
     "OpenSearchProvider",
     "OpenSearchConfig",
+    # ===== Shell =====
+    # 配置
+    "ShellConfig",
+    # 模型
+    "CommandResult",
+    "StreamType",
+    "StreamLine",
+    # 异常
+    "ShellError",
+    "ShellTimeoutError",
+    "ShellExecutionError",
+    # 执行器
+    "ShellExecutor",
+    # 服务
+    "ShellService",
+    "get_shell_service",
+    "create_shell_service",
+    # 快捷函数
+    "shell_run",
+    "shell_run_async",
 ]
 
 __version__ = "1.0.0"

@@ -1,7 +1,18 @@
 """
 FFmpeg 工具模块使用示例
+
+运行方式：
+    cd src
+    python -m packages.ffmpeg.example
 """
-from utils.ffmpeg import (
+import asyncio
+import sys
+import os
+
+# 添加 src 目录到路径
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+from packages.ffmpeg import (
     create_ffmpeg_service,
     get_default_service,
     FFmpegConfig,
@@ -14,6 +25,9 @@ from utils.ffmpeg import (
 
 def example_quick_start():
     """快速开始示例"""
+    print("=" * 50)
+    print("示例 1: 快速开始")
+    print("=" * 50)
     
     # 方式1：创建新服务实例（推荐）
     service = create_ffmpeg_service()
@@ -24,59 +38,51 @@ def example_quick_start():
     # 检查是否可用
     if service.is_available():
         print(f"FFmpeg 版本: {service.get_version()}")
+    else:
+        print("FFmpeg 不可用")
+    print()
 
 
 def example_custom_config():
     """自定义配置示例"""
+    print("=" * 50)
+    print("示例 2: 自定义配置")
+    print("=" * 50)
     
     # 自定义配置
     config = FFmpegConfig(
-        ffmpeg_path="/usr/local/bin/ffmpeg",
-        video_codec="libx265",
+        video_codec="libx264",
         video_bitrate="8000k",
         timeout=7200
     )
     
-    # 创建自定义配置的服务
-    service = create_ffmpeg_service(config)
-    
-    # 或者手动创建
-    service = FFmpegService(config)
-    service.init()
-
-
-def example_multiple_instances():
-    """多实例示例"""
-    
-    # 可以创建多个不同配置的实例
-    service_h264 = create_ffmpeg_service(FFmpegConfig(video_codec="libx264"))
-    service_h265 = create_ffmpeg_service(FFmpegConfig(video_codec="libx265"))
-    
-    # 每个实例独立工作
-    print(f"H264 服务可用: {service_h264.is_available()}")
-    print(f"H265 服务可用: {service_h265.is_available()}")
-
-
-def example_direct_client():
-    """直接使用 Client 示例"""
-    
-    # 直接创建客户端（不使用服务层）
-    config = FFmpegClientConfig(
-        video_codec="libx264",
-        video_bitrate="5000k"
+    # 创建自定义配置的服务（带并发控制）
+    service = create_ffmpeg_service(
+        config=config,
+        max_concurrent=3,      # 最大并发处理数
+        thread_pool_size=2,    # 线程池大小
     )
-    client = FFmpegClient(config)
     
-    if client.is_available():
-        print(f"FFmpeg 版本: {client.get_version()}")
+    print(f"服务创建成功，max_concurrent=3")
+    print()
 
 
 def example_get_video_info():
-    """获取视频信息示例"""
+    """获取视频信息示例（同步）"""
+    print("=" * 50)
+    print("示例 3: 获取视频信息（同步）")
+    print("=" * 50)
     
     service = create_ffmpeg_service()
     
     video_path = "input.mp4"
+    
+    # 检查文件是否存在
+    if not os.path.exists(video_path):
+        print(f"示例文件 {video_path} 不存在，跳过")
+        print()
+        return
+    
     info = service.get_video_info(video_path)
     
     print(f"文件: {info.path}")
@@ -86,37 +92,50 @@ def example_get_video_info():
     print(f"视频编码: {info.video_codec}")
     print(f"音频编码: {info.audio_codec}")
     print(f"文件大小: {info.size / 1024 / 1024:.2f}MB")
+    print()
 
 
-def example_compare_videos():
-    """比较视频参数示例"""
+async def example_get_video_info_async():
+    """获取视频信息示例（异步）"""
+    print("=" * 50)
+    print("示例 4: 获取视频信息（异步）")
+    print("=" * 50)
     
     service = create_ffmpeg_service()
     
-    video1 = "video1.mp4"
-    video2 = "video2.mp4"
+    video_path = "input.mp4"
     
-    result = service.compare_videos(video1, video2)
+    if not os.path.exists(video_path):
+        print(f"示例文件 {video_path} 不存在，跳过")
+        print()
+        return
     
-    print(f"是否兼容: {result.is_compatible}")
-    print(f"编码匹配: {result.codec_match}")
-    print(f"分辨率匹配: {result.resolution_match}")
-    print(f"帧率匹配: {result.fps_match}")
-    print(f"音频匹配: {result.audio_match}")
+    # 使用异步方法
+    info = await service.get_video_info_async(video_path)
     
-    if result.differences:
-        print("差异:")
-        for diff in result.differences:
-            print(f"  - {diff}")
+    print(f"文件: {info.path}")
+    print(f"时长: {info.duration:.2f}秒")
+    print(f"分辨率: {info.resolution}")
+    print()
 
 
 def example_concat_copy():
-    """不重新编码拼接示例"""
+    """不重新编码拼接示例（同步）"""
+    print("=" * 50)
+    print("示例 5: 不重编码拼接（同步）")
+    print("=" * 50)
     
     service = create_ffmpeg_service()
     
     videos = ["part1.mp4", "part2.mp4", "part3.mp4"]
     output = "output_copy.mp4"
+    
+    # 检查文件
+    missing = [v for v in videos if not os.path.exists(v)]
+    if missing:
+        print(f"示例文件不存在: {missing}，跳过")
+        print()
+        return
     
     result = service.concat_videos_copy(videos, output)
     
@@ -127,135 +146,187 @@ def example_concat_copy():
         print(f"耗时: {result.execution_time:.2f}秒")
     else:
         print(f"拼接失败: {result.error_message}")
+    print()
 
 
-def example_concat_reencode():
-    """重新编码拼接示例"""
+async def example_concat_async():
+    """拼接视频示例（异步）"""
+    print("=" * 50)
+    print("示例 6: 拼接视频（异步）")
+    print("=" * 50)
     
     service = create_ffmpeg_service()
     
-    videos = ["video_720p.mp4", "video_1080p.mp4"]
-    output = "output_reencode.mp4"
+    videos = ["part1.mp4", "part2.mp4"]
+    output = "output_async.mp4"
     
-    result = service.concat_videos_reencode(
-        video_paths=videos,
-        output_path=output,
-        video_codec="libx264",
-        audio_codec="aac",
-        video_bitrate="5000k",
-        audio_bitrate="192k",
-        resolution="1920x1080",
-        fps=30
-    )
+    missing = [v for v in videos if not os.path.exists(v)]
+    if missing:
+        print(f"示例文件不存在: {missing}，跳过")
+        print()
+        return
     
-    if result.success:
-        print(f"拼接成功!")
-        print(f"耗时: {result.execution_time:.2f}秒")
-    else:
-        print(f"拼接失败: {result.error_message}")
-
-
-def example_auto_concat():
-    """自动检测模式拼接示例"""
-    
-    service = create_ffmpeg_service()
-    
-    videos = ["video1.mp4", "video2.mp4"]
-    output = "output_auto.mp4"
-    
-    # 自动检测模式
-    result = service.concat_videos(
+    # 使用异步方法
+    result = await service.concat_videos_async(
         video_paths=videos,
         output_path=output,
         auto_detect=True,
-        # reencode 时使用的参数
-        resolution="1920x1080",
-        fps=30
     )
     
     print(f"使用模式: {result.mode.value}")
     print(f"成功: {result.success}")
+    print(f"耗时: {result.execution_time:.2f}秒")
+    print()
 
 
-def example_check_compatibility():
-    """检查多个视频兼容性示例"""
+async def example_concurrent_processing():
+    """并发处理示例"""
+    print("=" * 50)
+    print("示例 7: 并发处理多个视频")
+    print("=" * 50)
     
-    service = create_ffmpeg_service()
+    # 创建服务，限制最大并发数为 2
+    service = create_ffmpeg_service(max_concurrent=2)
     
     videos = ["video1.mp4", "video2.mp4", "video3.mp4"]
     
-    compat = service.check_compatibility(videos)
+    # 检查文件
+    existing = [v for v in videos if os.path.exists(v)]
+    if not existing:
+        print("没有示例视频文件，演示并发控制逻辑")
+        print("并发控制：即使同时发起多个请求，也只会同时处理 2 个")
+        print()
+        return
     
-    print(f"所有视频兼容: {compat['compatible']}")
-    print(f"推荐模式: {compat['recommended_mode'].value}")
+    import time
+    start = time.time()
     
-    if compat['all_differences']:
-        print("发现的差异:")
-        for diff in compat['all_differences']:
-            print(f"  - {diff}")
+    # 并发获取多个视频信息
+    tasks = [service.get_video_info_async(v) for v in existing]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    elapsed = time.time() - start
+    
+    print(f"处理 {len(existing)} 个视频，总耗时: {elapsed:.2f}秒")
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            print(f"视频 {i+1}: 错误 - {result}")
+        else:
+            print(f"视频 {i+1}: {result.duration:.2f}秒")
+    print()
 
 
-def example_mix_audio_replace():
-    """添加背景音乐（替换原音频）示例"""
+def example_mix_audio():
+    """混音示例（同步）"""
+    print("=" * 50)
+    print("示例 8: 添加背景音乐（同步）")
+    print("=" * 50)
     
     service = create_ffmpeg_service()
     
+    video_path = "video.mp4"
+    audio_path = "bgm.mp3"
+    output_path = "output_with_bgm.mp4"
+    
+    if not os.path.exists(video_path) or not os.path.exists(audio_path):
+        print(f"示例文件不存在，跳过")
+        print()
+        return
+    
     result = service.mix_audio(
-        video_path="video.mp4",
-        audio_path="bgm.mp3",
-        output_path="output_with_bgm.mp4",
-        loop_audio=True,         # 音频不够长时循环
-        replace_original=True,   # 替换原音频
-        audio_volume=0.8         # 背景音乐音量 80%
+        video_path=video_path,
+        audio_path=audio_path,
+        output_path=output_path,
+        loop_audio=True,
+        audio_volume=0.8
     )
     
     if result.success:
         print(f"混音成功!")
-        print(f"输出文件: {result.output_path}")
         print(f"音频是否循环: {result.audio_looped}")
         print(f"耗时: {result.execution_time:.2f}秒")
     else:
         print(f"混音失败: {result.error_message}")
+    print()
 
 
-def example_mix_audio_blend():
-    """添加背景音乐（混合原音频）示例"""
+async def example_mix_audio_async():
+    """混音示例（异步）"""
+    print("=" * 50)
+    print("示例 9: 添加背景音乐（异步）")
+    print("=" * 50)
     
     service = create_ffmpeg_service()
     
-    result = service.mix_audio(
-        video_path="video.mp4",
-        audio_path="bgm.mp3",
-        output_path="output_blended.mp4",
-        loop_audio=True,          # 音频不够长时循环
-        replace_original=False,   # 保留原音频
-        audio_volume=0.3,         # 背景音乐音量 30%
-        original_volume=0.7       # 原视频音量 70%
+    video_path = "video.mp4"
+    audio_path = "bgm.mp3"
+    output_path = "output_with_bgm_async.mp4"
+    
+    if not os.path.exists(video_path) or not os.path.exists(audio_path):
+        print(f"示例文件不存在，跳过")
+        print()
+        return
+    
+    # 使用异步方法
+    result = await service.mix_audio_async(
+        video_path=video_path,
+        audio_path=audio_path,
+        output_path=output_path,
+        loop_audio=True,
+        audio_volume=0.8
     )
     
     if result.success:
         print(f"混音成功!")
-        print(f"总时长: {result.duration:.2f}秒")
+        print(f"耗时: {result.execution_time:.2f}秒")
     else:
         print(f"混音失败: {result.error_message}")
+    print()
 
 
-def example_mix_audio_no_loop():
-    """添加背景音乐（不循环）示例"""
+async def example_resource_management():
+    """资源管理示例"""
+    print("=" * 50)
+    print("示例 10: 资源管理（上下文管理器）")
+    print("=" * 50)
     
-    service = create_ffmpeg_service()
+    # 使用上下文管理器自动管理资源
+    async with create_ffmpeg_service() as service:
+        if service.is_available():
+            print(f"服务可用: {service.get_version()}")
+        print("退出上下文时自动释放资源")
     
-    result = service.mix_audio(
-        video_path="video.mp4",
-        audio_path="short_bgm.mp3",
-        output_path="output_no_loop.mp4",
-        loop_audio=False,  # 音频不够长时不循环，后面会静音
-        replace_original=True
-    )
+    print()
+
+
+def main():
+    """运行所有示例"""
+    print("\n" + "=" * 50)
+    print("FFmpeg 模块使用示例")
+    print("=" * 50 + "\n")
     
-    if result.success:
-        print(f"混音成功! 音频未循环: {not result.audio_looped}")
+    # 同步示例
+    example_quick_start()
+    example_custom_config()
+    example_get_video_info()
+    example_concat_copy()
+    example_mix_audio()
+    
+    # 异步示例
+    print("\n" + "=" * 50)
+    print("异步示例")
+    print("=" * 50 + "\n")
+    
+    asyncio.run(example_get_video_info_async())
+    asyncio.run(example_concat_async())
+    asyncio.run(example_concurrent_processing())
+    asyncio.run(example_mix_audio_async())
+    asyncio.run(example_resource_management())
+    
+    print("=" * 50)
+    print("所有示例执行完成！")
+    print("=" * 50)
 
 
 if __name__ == "__main__":
-    example_quick_start()
+    main()
