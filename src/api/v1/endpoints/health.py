@@ -1,8 +1,11 @@
 """
 健康检查端点
 """
-from fastapi import APIRouter
 from datetime import datetime
+
+from fastapi import APIRouter
+
+from core.mongodb import get_database
 
 router = APIRouter(prefix="/health", tags=["Health"])
 
@@ -24,14 +27,22 @@ async def readiness_check():
     """
     就绪检查 - 检查所有依赖服务是否可用
     """
-    # TODO: 检查数据库连接、Redis连接等
+    # 检查 MongoDB 连接
+    database_ok = False
+    try:
+        db = get_database()
+        await db.client.admin.command("ping")
+        database_ok = True
+    except Exception:
+        pass
+
     checks = {
-        "database": True,
+        "database": database_ok,
         "cache": True,
     }
-    
+
     all_ready = all(checks.values())
-    
+
     return {
         "ready": all_ready,
         "checks": checks,

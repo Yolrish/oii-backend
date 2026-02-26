@@ -4,10 +4,12 @@ API v1 版本的依赖注入
 from typing import Optional
 
 from fastapi import Header, HTTPException, status, Depends
+from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from services.user_service import UserService, user_service
 from services.item_service import ItemService, item_service
 from schemas.common import PaginationParams
+from core.mongodb import get_database
 
 
 # ============ 认证依赖 ============
@@ -70,3 +72,12 @@ def get_item_service() -> ItemService:
     获取物品服务实例
     """
     return item_service
+
+
+# ============ MongoDB 依赖 ============
+
+def get_mongo_db() -> AsyncIOMotorDatabase:
+    """
+    获取 MongoDB 数据库实例，用于路由中注入
+    """
+    return get_database()

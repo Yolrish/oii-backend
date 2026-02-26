@@ -6,6 +6,8 @@ from utils.log import (
     create_default_log_service,
 )
 from api.v1.router import api_router
+from core.mongodb import connect_mongodb, close_mongodb
+from core.config import MongoDBConfig
 
 
 @asynccontextmanager
@@ -15,14 +17,20 @@ async def lifespan(app: FastAPI):
     启动时执行初始化，关闭时执行清理
     """
     # ===== 启动时执行 =====
-    # log服务初始化
+    # log 服务初始化
     log_service = create_default_log_service()
     results = log_service.init(force=True)
     print(f"LOG服务初始化结果: {results}")
-    
+
+    # MongoDB 连接
+    config = MongoDBConfig.from_env()
+    await connect_mongodb(config)
+    print(f"MongoDB 已连接，数据库: {config.db_name}")
+
     yield
-    
+
     # ===== 关闭时执行 =====
+    await close_mongodb()
     print("服务正在关闭...")
 
 
