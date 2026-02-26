@@ -5,6 +5,7 @@ Packages 模块包
 - ffmpeg: 视频处理工具（视频信息、拼接、混音等）
 - log: 日志服务（支持多 Provider 的日志写入）
 - shell: 命令行执行器（支持并发、实时输出）
+- workflow: 动态工作流（Step 串行、Task 并行、生命周期回调）
 
 使用示例：
     # FFmpeg 模块
@@ -86,6 +87,23 @@ from .shell import (
     run_async as shell_run_async,
 )
 
+# Workflow 模块
+from .workflow import (
+    WorkflowConfig,
+    default_config as workflow_default_config,
+    StepCallbacks,
+    TaskCallbacks,
+    Task,
+    Step,
+    Workflow,
+    StepResult,
+    TaskResult,
+    WorkflowResult,
+    WorkflowService,
+    create_workflow_service,
+    get_default_service as get_workflow_service,
+)
+
 __all__ = [
     # ===== FFmpeg =====
     # 配置
@@ -138,6 +156,20 @@ __all__ = [
     # 快捷函数
     "shell_run",
     "shell_run_async",
+    # ===== Workflow =====
+    "WorkflowConfig",
+    "workflow_default_config",
+    "StepCallbacks",
+    "TaskCallbacks",
+    "Task",
+    "Step",
+    "Workflow",
+    "StepResult",
+    "TaskResult",
+    "WorkflowResult",
+    "WorkflowService",
+    "create_workflow_service",
+    "get_workflow_service",
 ]
 
 __version__ = "1.0.0"
