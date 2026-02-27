@@ -3,6 +3,7 @@
 
 供 ai_spec 等模块在从 Spec 加载 Workflow 时，将 handler 路径解析为 callable。
 """
+
 from typing import Any, Callable, Optional
 import importlib
 

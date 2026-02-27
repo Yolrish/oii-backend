@@ -4,6 +4,7 @@ AI 指定格式 → Workflow 的映射
 将 AI 返回的指定格式（WorkflowSpec）转为 Workflow/Step/Task，仅写入路径字符串，不解析为函数。
 执行时由 WorkflowService 在 run_workflow / _run_step / _run_task 中通过 resolve_handler 将路径解析为 callable 再执行。
 """
+
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -88,7 +89,9 @@ def parse_ai_workflow(
         for t in s.tasks:
             t.parent_workflow_id = wid
             t.parent_step_id = s.id
-    end_step.previous_step_id = all_steps[-2].id if len(all_steps) > 1 else start_step.id
+    end_step.previous_step_id = (
+        all_steps[-2].id if len(all_steps) > 1 else start_step.id
+    )
     w = Workflow(
         id=wid,
         name=spec.name or "",

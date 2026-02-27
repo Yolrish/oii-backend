@@ -183,7 +183,7 @@ async def main():
 
 ## API 摘要
 
-- **Workflow**：`create_workflow(name, creator=..., description=...)`、`get_workflow(id)`、`delete_workflow(id)`
+- **Workflow**：`create_workflow(name, creator=..., description=...)`、`get_workflow(id)`（async，未命中缓存且开启持久化时从 DB 加载）、`delete_workflow(id)`
 - **Step**：`add_step`（在结束节点前追加过程 step）、`add_step_after`（在指定 step 后插入过程 step，不可在结束节点后插入）、`delete_step`（起始/结束节点不可删）、`edit_step`、`re_run_step`
 
 **说明**：当已注入 `db` 且 `persist_enabled=True` 时，**create_workflow / add_step / add_step_after / add_task / edit_step / edit_task / delete_step / delete_task / delete_workflow** 在操作完成后会**自动同步到数据库**。上述方法均为 **async**，调用时需 **await**。
@@ -307,5 +307,6 @@ result = await svc.run_workflow(w.id, context={})
 
 **可选后续优化：**
 
+- **Workflow 内存存储**：已采用「按需从 DB 加载」：`_workflows` 为内存缓存，`get_workflow`、`run_workflow`、`add_step` 等若缓存未命中且已开启持久化则从三表加载并写入缓存，适合 Web 后端（跨请求、多实例、重启后仍可操作）。后续可按需加 LRU/TTL 限制缓存大小。
 - **step_timeout / task_timeout**：配置项已存在，执行层尚未用 `asyncio.wait_for` 做超时，可按需加上。
 - **MongoDB 索引**：step 表按 `parent_workflow_id`、task 表按 `parent_step_id` / `parent_workflow_id` 查询，数据量大时建议加对应索引。

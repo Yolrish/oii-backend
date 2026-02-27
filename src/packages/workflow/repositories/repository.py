@@ -7,6 +7,7 @@ Workflow 持久化：三张表（workflow / step / task），通过关联 id 查
 
 单条修改只更新对应表，避免整份文档重写。
 """
+
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -148,10 +149,13 @@ def _doc_to_task(doc: Dict[str, Any]) -> Task:
     )
 
 
-async def _find_doc_by_id(db: Any, collection: str, id_value: str) -> Optional[Dict[str, Any]]:
+async def _find_doc_by_id(
+    db: Any, collection: str, id_value: str
+) -> Optional[Dict[str, Any]]:
     """按 _id 查一条；支持 str 或 ObjectId"""
     try:
         from bson import ObjectId
+
         doc = await db[collection].find_one({"_id": ObjectId(id_value)})
     except Exception:
         doc = None
@@ -172,6 +176,7 @@ async def save_workflow_meta(
     doc = _workflow_meta_to_doc(workflow)
     try:
         from bson import ObjectId
+
         await db[workflow_collection].replace_one(
             {"_id": ObjectId(workflow.id)},
             doc,
@@ -210,6 +215,7 @@ async def save_step(
     doc = _step_to_doc(step)
     try:
         from bson import ObjectId
+
         await db[step_collection].replace_one(
             {"_id": ObjectId(step.id)},
             doc,
@@ -271,6 +277,7 @@ async def delete_step_from_db(
     """删除 step 表一行"""
     try:
         from bson import ObjectId
+
         res = await db[step_collection].delete_one({"_id": ObjectId(step_id)})
     except Exception:
         res = await db[step_collection].delete_one({"_id": step_id})
@@ -299,6 +306,7 @@ async def save_task(
     doc = _task_to_doc(task)
     try:
         from bson import ObjectId
+
         await db[task_collection].replace_one(
             {"_id": ObjectId(task.id)},
             doc,
@@ -333,14 +341,27 @@ async def update_task_result(
     now = datetime.utcnow()
     try:
         from bson import ObjectId
+
         res = await db[task_collection].update_one(
             {"_id": ObjectId(task_id)},
-            {"$set": {"run_status": run_status, "result": result_content.to_dict(), "updated_at": now}},
+            {
+                "$set": {
+                    "run_status": run_status,
+                    "result": result_content.to_dict(),
+                    "updated_at": now,
+                }
+            },
         )
     except Exception:
         res = await db[task_collection].update_one(
             {"_id": task_id},
-            {"$set": {"run_status": run_status, "result": result_content.to_dict(), "updated_at": now}},
+            {
+                "$set": {
+                    "run_status": run_status,
+                    "result": result_content.to_dict(),
+                    "updated_at": now,
+                }
+            },
         )
     return res.matched_count > 0
 
@@ -364,6 +385,7 @@ async def delete_task_from_db(
     """删除 task 表一行"""
     try:
         from bson import ObjectId
+
         res = await db[task_collection].delete_one({"_id": ObjectId(task_id)})
     except Exception:
         res = await db[task_collection].delete_one({"_id": task_id})
@@ -428,6 +450,7 @@ async def delete_workflow_cascade(
     await delete_steps_by_workflow(db, step_collection, workflow_id)
     try:
         from bson import ObjectId
+
         res = await db[workflow_collection].delete_one({"_id": ObjectId(workflow_id)})
     except Exception:
         res = await db[workflow_collection].delete_one({"_id": workflow_id})
@@ -448,7 +471,9 @@ async def delete_step_cascade(
 # ---------- Spec 单表（可选，用于仅存 spec 的场景） ----------
 
 
-async def _find_workflow_doc(db: Any, collection_name: str, workflow_id: str) -> Optional[Any]:
+async def _find_workflow_doc(
+    db: Any, collection_name: str, workflow_id: str
+) -> Optional[Any]:
     doc = await _find_doc_by_id(db, collection_name, workflow_id)
     return doc
 
@@ -467,6 +492,7 @@ async def save_workflow_spec(
     若已用三表存储，workflow 表仅存元数据，可不使用本函数。
     """
     from bson import ObjectId
+
     now = datetime.utcnow()
     doc = {
         "name": name if name is not None else spec.name,
@@ -510,6 +536,7 @@ async def update_workflow_spec(
     name: Optional[str] = None,
 ) -> bool:
     from bson import ObjectId
+
     now = datetime.utcnow()
     update = {"spec": workflow_spec_to_dict(spec), "updated_at": now}
     if name is not None:
@@ -535,6 +562,7 @@ async def delete_workflow_from_db(
     """仅删 workflow 表一行（不级联）。三表模式下请用 delete_workflow_cascade。"""
     try:
         from bson import ObjectId
+
         res = await db[collection_name].delete_one({"_id": ObjectId(workflow_id)})
     except Exception:
         res = await db[collection_name].delete_one({"_id": workflow_id})
@@ -549,7 +577,9 @@ async def save_workflow_task_result(
     result_content: TaskResultContent,
 ) -> bool:
     """将 task 执行结果写入 task 表（更新 run_status 与 result）"""
-    return await update_task_result(db, task_collection, task_id, run_status, result_content)
+    return await update_task_result(
+        db, task_collection, task_id, run_status, result_content
+    )
 
 
 # ---------- 单表整份读写（可选） ----------
@@ -558,6 +588,7 @@ async def save_workflow_task_result(
 def workflow_to_doc(w: Workflow) -> Dict[str, Any]:
     """Workflow 整份导出为单文档；三表模式下可用 save_workflow_meta + save_step + save_task 分表写入"""
     from ..ai_spec import workflow_to_spec as _workflow_to_spec
+
     now = datetime.utcnow()
     return {
         "_id": w.id,

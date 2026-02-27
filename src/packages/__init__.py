@@ -12,13 +12,13 @@ Packages 模块包
     from packages.ffmpeg import create_ffmpeg_service
     service = create_ffmpeg_service()
     info = service.get_video_info("video.mp4")
-    
+
     # Log 模块
     from packages.log import LogService, create_default_log_service
     service = create_default_log_service()
     service.init()
     service.info("Hello")
-    
+
     # Shell 模块
     from packages.shell import run, ShellExecutor
     result = run("git status")

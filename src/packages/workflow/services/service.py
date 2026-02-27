@@ -4,6 +4,7 @@ Workflow 服务
 创建/管理仅使用字符串（handler 路径、回调路径）；执行时将路径解析为函数再执行。
 提供工作流的创建、步骤/任务的增删改与重执行，以及整链串行（step）+ 步骤内并行（task）的执行逻辑。
 """
+
 import asyncio
 from datetime import datetime
 from typing import Any, Callable, Optional, List, Dict
@@ -28,6 +29,7 @@ from ..models.models import (
 from ..models.persistence import resolve_handler
 from ..repositories import (
     save_workflow_meta,
+    load_workflow_from_db,
     save_step,
     update_step,
     save_task,
@@ -47,14 +49,18 @@ def _resolve_path(path: str) -> Optional[Callable[..., Any]]:
     return resolve_handler(path.strip())
 
 
-def _invoke_callback(cb: Optional[Callable[..., Any]], *args: Any, **kwargs: Any) -> Any:
+def _invoke_callback(
+    cb: Optional[Callable[..., Any]], *args: Any, **kwargs: Any
+) -> Any:
     """调用回调（sync 或 async），由调用方负责 await。"""
     if cb is None:
         return None
     return cb(*args, **kwargs)
 
 
-async def _invoke_callback_async(cb: Optional[Callable[..., Any]], *args: Any, **kwargs: Any) -> Any:
+async def _invoke_callback_async(
+    cb: Optional[Callable[..., Any]], *args: Any, **kwargs: Any
+) -> Any:
     """异步调用回调：若为 coroutine 则 await，否则直接返回。"""
     if cb is None:
         return None
@@ -72,6 +78,7 @@ class WorkflowService:
     - 执行时由服务将路径解析为 callable 再执行
     - 支持可选的数据库持久化（需 config.persist_enabled 并注入 db）
     - 当已配置 db 且 persist_enabled 时，create/add/edit/delete 等操作完成后会自动同步到数据库
+    - Web 后端场景：_workflows 为缓存，get_workflow/run_workflow 等若内存未命中则从 DB 按需加载，便于跨请求、多实例、重启后仍可操作
     """
 
     def __init__(
@@ -81,6 +88,7 @@ class WorkflowService:
     ) -> None:
         self.config = config or WorkflowConfig()
         self._db = db
+        # 内存缓存；未命中时若已开启持久化则从 DB 按需加载（见 _ensure_workflow）
         self._workflows: Dict[str, Workflow] = {}
 
     def _wf_coll(self) -> str:
@@ -91,6 +99,23 @@ class WorkflowService:
 
     def _task_coll(self) -> str:
         return self.config.task_collection_name
+
+    async def _ensure_workflow(self, workflow_id: str) -> Optional[Workflow]:
+        """若 workflow 在内存则直接返回；否则若已开启持久化则从 DB 加载并放入缓存后返回；否则返回 None"""
+        if workflow_id in self._workflows:
+            return self._workflows[workflow_id]
+        if self._db and self.config.persist_enabled:
+            w = await load_workflow_from_db(
+                self._db,
+                self._wf_coll(),
+                self._step_coll(),
+                self._task_coll(),
+                workflow_id,
+            )
+            if w:
+                self._workflows[workflow_id] = w
+            return w
+        return None
 
     # ---------- Workflow CRUD ----------
 
@@ -140,30 +165,39 @@ class WorkflowService:
             await save_step(self._db, self._step_coll(), end_step)
         return w
 
-    def get_workflow(self, workflow_id: str) -> Optional[Workflow]:
-        """根据 id 获取 workflow"""
-        return self._workflows.get(workflow_id)
+    async def get_workflow(self, workflow_id: str) -> Optional[Workflow]:
+        """根据 id 获取 workflow；若不在内存且已开启持久化则从 DB 按需加载"""
+        return await self._ensure_workflow(workflow_id)
 
     async def delete_workflow(self, workflow_id: str) -> bool:
-        """删除 workflow，并级联删除 step 表、task 表中关联行"""
-        if workflow_id not in self._workflows:
-            return False
+        """删除 workflow，并级联删除 step 表、task 表中关联行；若仅存在于 DB 也会执行级联删除"""
+        if workflow_id in self._workflows:
+            if self._db and self.config.persist_enabled:
+                await delete_workflow_cascade(
+                    self._db,
+                    self._wf_coll(),
+                    self._step_coll(),
+                    self._task_coll(),
+                    workflow_id,
+                )
+            del self._workflows[workflow_id]
+            return True
         if self._db and self.config.persist_enabled:
-            await delete_workflow_cascade(
+            ok = await delete_workflow_cascade(
                 self._db,
                 self._wf_coll(),
                 self._step_coll(),
                 self._task_coll(),
                 workflow_id,
             )
-        del self._workflows[workflow_id]
-        return True
+            return ok
+        return False
 
     async def persist_workflow(self, workflow_id: str) -> bool:
         """将当前 workflow 全量同步到三张表（逐表写入）；未配置持久化时返回 False"""
         if not self._db or not self.config.persist_enabled:
             return False
-        w = self._workflows.get(workflow_id)
+        w = await self._ensure_workflow(workflow_id)
         if not w:
             return False
         await save_workflow_meta(self._db, self._wf_coll(), w)
@@ -187,7 +221,7 @@ class WorkflowService:
         on_retry_path: str = "",
     ) -> Optional[Step]:
         """在 workflow 中结束节点前添加过程 step（链：… -> 新step -> 结束）"""
-        w = self._workflows.get(workflow_id)
+        w = await self._ensure_workflow(workflow_id)
         if not w or not w.end_step_id:
             return None
         end_step = self._get_step(workflow_id, w.end_step_id)
@@ -241,7 +275,7 @@ class WorkflowService:
         on_retry_path: str = "",
     ) -> Optional[Step]:
         """在指定 step 后方插入新的过程 step；不可在结束节点后插入"""
-        w = self._workflows.get(workflow_id)
+        w = await self._ensure_workflow(workflow_id)
         if not w:
             return None
         if after_step_id == w.end_step_id:
@@ -290,7 +324,7 @@ class WorkflowService:
 
     async def delete_step(self, workflow_id: str, step_id: str) -> bool:
         """删除指定 step；起始节点与结束节点不可删除"""
-        w = self._workflows.get(workflow_id)
+        w = await self._ensure_workflow(workflow_id)
         if not w:
             return False
         if step_id == w.first_step_id or step_id == w.end_step_id:
@@ -334,6 +368,9 @@ class WorkflowService:
         on_retry_path: Optional[str] = None,
     ) -> Optional[Step]:
         """编辑 step（名称、描述、创建者与回调路径）"""
+        w = await self._ensure_workflow(workflow_id)
+        if not w:
+            return None
         step = self._get_step(workflow_id, step_id)
         if not step:
             return None
@@ -381,6 +418,9 @@ class WorkflowService:
         on_retry_path: str = "",
     ) -> Optional[Task]:
         """在 step 内添加 task；起始节点与结束节点不可添加 task"""
+        w = await self._ensure_workflow(workflow_id)
+        if not w:
+            return None
         step = self._get_step(workflow_id, step_id)
         if not step:
             return None
@@ -409,6 +449,9 @@ class WorkflowService:
 
     async def delete_task(self, workflow_id: str, step_id: str, task_id: str) -> bool:
         """删除 step 内指定 task；起始/结束节点上不允许删除（无 task 或防御性校验）"""
+        w = await self._ensure_workflow(workflow_id)
+        if not w:
+            return False
         step = self._get_step(workflow_id, step_id)
         if not step:
             return False
@@ -438,6 +481,9 @@ class WorkflowService:
         on_retry_path: Optional[str] = None,
     ) -> Optional[Task]:
         """编辑 task（名称、描述、创建者、handler 路径、参数与回调路径）；起始/结束节点上无 task，直接返回 None"""
+        w = await self._ensure_workflow(workflow_id)
+        if not w:
+            return None
         step = self._get_step(workflow_id, step_id)
         if not step:
             return None
@@ -516,11 +562,16 @@ class WorkflowService:
             await _invoke_callback_async(on_before, step, context)
             await _invoke_callback_async(on_start, step, context)
             coros = [self._run_task(t, context) for t in step.tasks]
-            if self.config.max_task_concurrent and 0 < self.config.max_task_concurrent < len(coros):
+            if (
+                self.config.max_task_concurrent
+                and 0 < self.config.max_task_concurrent < len(coros)
+            ):
                 sem = asyncio.Semaphore(self.config.max_task_concurrent)
+
                 async def bounded(coro):
                     async with sem:
                         return await coro
+
                 task_results = await asyncio.gather(*[bounded(c) for c in coros])
             else:
                 task_results = await asyncio.gather(*coros)
@@ -535,6 +586,9 @@ class WorkflowService:
         self, workflow_id: str, step_id: str, context: Optional[Dict[str, Any]] = None
     ) -> Optional[StepResult]:
         """重执行指定 step（先触发 step.on_retry_path 对应回调）"""
+        w = await self._ensure_workflow(workflow_id)
+        if not w:
+            return None
         step = self._get_step(workflow_id, step_id)
         if not step:
             return None
@@ -549,7 +603,7 @@ class WorkflowService:
         self, workflow_id: str, context: Optional[Dict[str, Any]] = None
     ) -> Optional[WorkflowResult]:
         """按链顺序串行执行所有 step，每个 step 内 task 并行执行；成功完成的 task 结果会写入内存并可选持久化到 DB"""
-        w = self._workflows.get(workflow_id)
+        w = await self._ensure_workflow(workflow_id)
         if not w:
             return None
         ctx = context or {}
@@ -586,6 +640,9 @@ class WorkflowService:
         context: Optional[Dict[str, Any]] = None,
     ) -> Optional[TaskResult]:
         """重执行指定 task（先触发 on_retry_path 对应回调）；成功则更新并可选持久化该 task 结果"""
+        w = await self._ensure_workflow(workflow_id)
+        if not w:
+            return None
         step = self._get_step(workflow_id, step_id)
         if not step:
             return None

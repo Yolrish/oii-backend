@@ -6,6 +6,7 @@ Workflow -> Step（链式串行）-> Task（Step 内并行）
 Task 执行结果统一为 { type, content } 格式，用于持久化到数据库。
 Workflow/Step/Task 均含：id、创建者、创建时间、名称、描述及关联 id 等存储所需字段。
 """
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
@@ -49,6 +50,7 @@ class TaskResultContent:
     - type: 内容类型，取值为 text | image | video | audio
     - content: 文本内容或文件服务器 URL（字符串）
     """
+
     type: str = "text"  # text | image | video | audio
     content: str = ""
 
@@ -86,6 +88,7 @@ TASK_RUN_STATUS_FAILED = "failed"
 
 # ---------- Task ----------
 
+
 @dataclass
 class Task:
     """
@@ -93,6 +96,7 @@ class Task:
     存储：id、父 step/workflow id、创建者、创建时间、运行状态、名称、描述、函数字符信息（handler_path 等）、执行结果。
     执行时由服务将 handler_path 解析为 callable 再执行。
     """
+
     id: str = field(default_factory=_new_task_id)
     name: str = ""
     description: str = ""
@@ -122,6 +126,7 @@ class TaskResult:
     Task 执行结果
     data 为 TaskResultContent 或可被 TaskResultContent.from_dict 解析的返回值，便于持久化 { type, content }。
     """
+
     task_id: str = ""
     success: bool = False
     data: Optional[TaskResultContent] = None  # 统一为 { type, content } 格式
@@ -152,6 +157,7 @@ class Step:
     存储：id、type（start/process/end）、父 workflow id、上一个/下一个 step id、创建者、创建时间、拥有的 task 列表、名称、描述。
     起始/结尾节点（type=start/end）不可删除、不可添加 task；start 的 previous_step_id 为空，end 的 next_step_id 为空。
     """
+
     id: str = field(default_factory=_new_step_id)
     type: str = STEP_TYPE_PROCESS  # start | process | end
     name: str = ""
@@ -181,6 +187,7 @@ class Step:
 @dataclass
 class StepResult:
     """Step 执行结果（包含该 step 内所有 task 的结果）"""
+
     step_id: str = ""
     success: bool = False
     task_results: List[TaskResult] = field(default_factory=list)
@@ -188,6 +195,7 @@ class StepResult:
 
 
 # ---------- Workflow ----------
+
 
 @dataclass
 class Workflow:
@@ -198,6 +206,7 @@ class Workflow:
     first_step_id：链上的第一个 step，执行时由此开始；该起始 step 不可被删除。
     task_results: 已执行 task 的结果，key 为 task_id，与 DB 一致。
     """
+
     id: str = field(default_factory=_new_workflow_id)
     name: str = ""
     description: str = ""
@@ -225,6 +234,7 @@ class Workflow:
 @dataclass
 class WorkflowResult:
     """Workflow 整体执行结果"""
+
     workflow_id: str = ""
     success: bool = False
     step_results: List[StepResult] = field(default_factory=list)
