@@ -1,8 +1,15 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
+import sys
+
+# 将 src 加入路径，便于从项目根运行 uvicorn src.main:app 或 python src/main.py 时解析 packages / api / core
+_src_dir = Path(__file__).resolve().parent
+if str(_src_dir) not in sys.path:
+    sys.path.insert(0, str(_src_dir))
 
 from fastapi import FastAPI
 
-from utils.log import (
+from packages.log import (
     create_default_log_service,
 )
 from api.v1.router import api_router
