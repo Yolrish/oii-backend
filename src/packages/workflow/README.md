@@ -15,9 +15,122 @@
 
 ## 概念与存储字段
 
-- **Workflow**：工作流。至少存储：**id**、**创建者**（creator）、**创建时间**（created_at）、**名称**（name）、**描述**（description）、**拥有的 step 的 id**（step_ids，由 steps 推导）。
-- **Step**：步骤，按链式顺序串行。至少存储：**id**、**父 workflow id**（parent_workflow_id）、**上一个/下一个 step id**（previous_step_id、next_step_id）、**创建者**、**创建时间**、**拥有的 task 的 id**（task_ids）、**名称**、**描述**。
+- **Workflow**：工作流。至少存储：**id**、**创建者**（creator）、**创建时间**（created_at）、**名称**（name）、**描述**（description）、**起始 step id**（first_step_id）、**结束 step id**（end_step_id）、**step 列表**（steps）。创建时默认包含起始节点与结束节点，二者不可删除。
+- **Step**：步骤，按链式顺序串行。**type** 为「起始」/「过程」/「结尾」之一（存储值分别为 `start` / `process` / `end`）。起始节点 previous_step_id 为空，结束节点 next_step_id 为空；起始与结束节点不可删除、不可添加 Task。至少存储：**id**、**type**、**parent_workflow_id**、**previous_step_id**、**next_step_id**、**创建者**、**创建时间**、**task 列表**、**名称**、**描述**。
 - **Task**：任务，挂在 Step 下、同 Step 内并行。至少存储：**id**、**父 step 与父 workflow 的 id**、**创建者**、**创建时间**、**运行状态**（run_status：pending/running/success/failed）、**名称**、**描述**、**函数的字符信息**（handler_path、params 等）、**执行结果**（result：TaskResultContent）。
+
+## Workflow 创建与执行流程（从开始到结束）
+
+下面按顺序说明一次完整的「创建 → 编排 → 执行」流程。
+
+### 1. 创建 Workflow
+
+调用 `create_workflow(name, creator=..., description=...)` 会：
+
+- 在内存中创建一个 **Workflow** 实例（id、name、description、creator、created_at）。
+- **自动创建两个内置 Step**：
+  - **起始节点**（type=`start`）：名称 "Start"，`previous_step_id` 为空，`next_step_id` 指向结束节点；作为链头，不可删除、不可添加 Task。
+  - **结束节点**（type=`end`）：名称 "End"，`previous_step_id` 指向起始节点（后续会随插入过程 step 而更新），`next_step_id` 为空；作为链尾，不可删除、不可添加 Task。
+- 设置 `workflow.first_step_id`、`workflow.end_step_id`，链结构初始为：`[Start] → [End]`。
+- 若配置了 `persist_enabled` 且注入了 `db`，会写入 **workflow 表**一行，并写入 **step 表**两行（起始、结束）。
+
+### 2. 添加过程 Step
+
+- **add_step(workflow_id, name=..., ...)**：在**结束节点前**插入一个 type=`process` 的 Step。链变为：`[Start] → [过程1] → [End]`；多次调用则依次在结束前追加：`[Start] → [过程1] → [过程2] → [End]`。
+- **add_step_after(workflow_id, after_step_id, ...)**：在指定 Step **后面**插入一个 process Step；不允许在结束节点后插入（`after_step_id` 不能为 `end_step_id`）。
+- 过程 Step 可删除（**delete_step**）；起始、结束节点不可删除。
+- 每次 add/update/delete 若开启持久化，只会同步**受影响的那张表**（workflow 表或 step 表）。
+
+### 3. 在 Step 上添加 Task
+
+- **add_task(workflow_id, step_id, name=..., handler_path=..., params=..., ...)**：在指定 Step 下挂一个 Task。
+- **仅允许在 type=`process` 的 Step 上添加**；在起始/结束节点上调用会返回 `None`。
+- Task 存储 handler 的**模块路径字符串**（`handler_path`）和参数（`params`），执行时再由服务解析为函数调用。
+- 若开启持久化，会写入 **task 表**一行。
+
+### 4. 执行 Workflow
+
+- **run_workflow(workflow_id, context=...)**：
+  1. 按 **Step 链顺序**依次执行（顺序与 `workflow.steps` 一致：Start → 过程1 → 过程2 → … → End）。
+  2. 每个 Step 内：先执行 Step 的生命周期回调（on_before_path、on_start_path 等），再**并行执行**该 Step 下所有 Task（可通过 `max_task_concurrent` 限制并发数）。
+  3. 每个 Task：将 `handler_path` 解析为 callable，以 `(context, **params)` 调用；结果规范为 `TaskResultContent`，写入 `workflow.task_results[task_id]`，若开启持久化则更新 **task 表**的 `run_status` 与 `result`。
+  4. 起始/结束节点没有 Task，只跑其生命周期回调（若有）；任一步失败会终止后续 Step，并在 `WorkflowResult` 中记录 `error`。
+- **re_run_step** / **re_run_task**：可对单个 Step 或 Task 重跑（会触发 on_retry_path 等）。
+
+### 5. 持久化与加载
+
+- **创建/编排阶段**：若 `persist_enabled=True` 且注入了 `db`，则 `create_workflow`、`add_step`、`add_step_after`、`add_task`、`edit_*`、`delete_*` 会在操作后**按表**同步（workflow 表、step 表、task 表各写各自行）。
+- **执行阶段**：`run_workflow` / `re_run_task` 成功后会把 task 结果写回 **task 表**（`run_status`、`result`）。
+- **加载已有 Workflow**：使用 `load_workflow_from_db(db, workflow_collection, step_collection, task_collection, workflow_id)` 从三张表组装出完整 Workflow（含 steps、tasks、first_step_id、end_step_id），再放入 `svc._workflows[w.id]` 即可执行。
+
+### 流程小结
+
+| 阶段     | 操作 | 说明 |
+|----------|------|------|
+| 创建     | `create_workflow` | 生成 Workflow + 起始/结束两个 Step，链为 Start → End |
+| 编排     | `add_step` / `add_step_after` | 在结束前或指定 Step 后插入 process Step |
+| 编排     | `add_task` | 仅在 process Step 上添加 Task（handler_path、params 为字符串） |
+| 执行     | `run_workflow` | 按链串行执行 Step，Step 内 Task 并行；结果写入 task_results 并可选落库 |
+| 加载     | `load_workflow_from_db` | 从三表组装 Workflow，再注册到服务后执行 |
+
+## Workflow 整体流程逻辑梳理
+
+### 一、数据模型与 ID 规则
+
+| 实体 | 主键 id 格式 | 说明 |
+|------|----------------|------|
+| Workflow | `workflow_` + UUID | 未传 id 时由 `_new_workflow_id()` 生成 |
+| Step | `step_` + UUID | 由 `_new_step_id()` 生成 |
+| Task | `task_` + UUID | 由 `_new_task_id()` 生成 |
+
+链结构：Step 通过 `previous_step_id` / `next_step_id` 形成单向链；Workflow 通过 `first_step_id`（链头）、`end_step_id`（链尾）定位起止。起始 step 的 `previous_step_id` 为空，结束 step 的 `next_step_id` 为空。
+
+### 二、创建入口（两条路径）
+
+| 入口 | 说明 | 结果 |
+|------|------|------|
+| **create_workflow** | 服务层创建空流程 | Workflow + Start Step + End Step，链为 [Start]→[End]，写入 `_workflows`，可选落库 workflow 表 + step 表 |
+| **parse_ai_workflow** | 从 AI Spec 解析 | Workflow(id 可指定或自动带前缀) + Start + 若干 process Step + End，链完整，未写入服务；需手动 `svc._workflows[w.id] = w` 后才能 add_step / run_workflow |
+
+两路径产出的 Workflow 结构一致（均有 first_step_id、end_step_id 与 Start/End 节点），便于统一后续编排与执行。
+
+### 三、编排逻辑
+
+- **add_step(workflow_id, ...)**：在 `end_step` 前插入一个 process Step，更新 end 的 previous、前一个 step 的 next、内存 `w.steps` 顺序；持久化时写 step 表并更新受影响 step 行。
+- **add_step_after(workflow_id, after_step_id, ...)**：禁止 `after_step_id == end_step_id`；在指定 step 后插入 process Step，维护前后链指针与 `w.steps`；持久化同上。
+- **delete_step(workflow_id, step_id)**：禁止删除 `first_step_id` / `end_step_id`；从链中摘除后更新前驱与后继的 next/previous，并级联删除 step 表与 task 表中该 step 及其 tasks。
+- **add_task(workflow_id, step_id, ...)**：仅允许 step.type == process；起始/结束节点返回 None。
+- **delete_task** / **edit_task**：同样禁止在 start/end 节点上操作（防御性）。
+
+### 四、持久化（三张表）
+
+- **workflow 表**：仅元数据（id、name、description、creator、created_at、first_step_id、end_step_id、updated_at）；create/update workflow 或 first/end 变化时写入。
+- **step 表**：每行一个 Step（含 type、parent_workflow_id、previous_step_id、next_step_id、回调路径等）；add/update/delete step 时只写或删对应行。
+- **task 表**：每行一个 Task（含 parent_step_id、handler_path、params、run_status、result 等）；add/update/delete task 或执行结果落库时写对应行。
+
+**加载**：`load_workflow_from_db` 先查 workflow 表得元数据，再按 `parent_workflow_id` 查 step 表，按链序排好，再按 `parent_step_id` 为每个 step 查 task 表并填回；最后把 task 的 result 填到 `workflow.task_results`。ID 为带前缀字符串时，Mongo 以 string 存 `_id`，查询用同一 string 即可。
+
+### 五、执行顺序与生命周期
+
+**run_workflow(workflow_id, context)**：
+
+1. 从 `w.steps` 按**当前顺序**依次执行（顺序与链一致：Start → 过程1 → … → End）。
+2. 对每个 Step：先 step 级 on_before → on_start；再对该 step 下所有 Task **并行**执行（可配 `max_task_concurrent`）；再 step 级 on_done。
+3. 对每个 Task：on_before → on_start → `resolve_handler(handler_path)(context, **params)` → 结果规范为 TaskResultContent → on_done；结果写入 `w.task_results[task_id]` 并可选写 task 表。
+4. 任一步失败则终止后续 step，`WorkflowResult.error` 记录原因；Start/End 无 task，仅跑其 step 级回调。
+
+**re_run_step** / **re_run_task**：先触发对应 on_retry_path，再按 step 或 task 执行一次，成功则同上写回 task_results 与 task 表。
+
+### 六、约束汇总
+
+| 约束 | 说明 |
+|------|------|
+| 起始/结束节点不可删除 | delete_step 时 step_id 不能为 first_step_id / end_step_id |
+| 起始/结束节点不可添加/删除/编辑 Task | add_task / delete_task / edit_task 在 step.type 为 start/end 时直接返回 None/False |
+| 不可在结束节点后插入 Step | add_step_after 的 after_step_id 不能为 end_step_id |
+| 无 end_step_id 的 workflow | 未通过 create_workflow/parse_ai_workflow 创建时 add_step 会返回 None |
+
+---
 
 ## 生命周期回调（路径表示）
 
@@ -39,10 +152,10 @@ from packages.workflow import create_workflow_service
 
 async def main():
     svc = create_workflow_service()
-    w = svc.create_workflow("示例流程")
+    w = await svc.create_workflow("示例流程")
 
-    # 添加 Step（回调为模块路径字符串）
-    step1 = svc.add_step(
+    # 添加 Step（回调为模块路径字符串）；启用持久化时会自动同步到 DB
+    step1 = await svc.add_step(
         w.id,
         "第一步",
         on_before_path="myapp.callbacks.before_step",
@@ -50,13 +163,13 @@ async def main():
     )
 
     # 添加 Task：只传 handler_path 与 params，不传函数
-    svc.add_task(
+    await svc.add_task(
         w.id, step1.id,
         name="t1",
         handler_path="myapp.tasks.my_task",
         params={"value": 10},
     )
-    svc.add_task(
+    await svc.add_task(
         w.id, step1.id,
         name="t2",
         handler_path="myapp.tasks.my_task",
@@ -71,7 +184,9 @@ async def main():
 ## API 摘要
 
 - **Workflow**：`create_workflow(name, creator=..., description=...)`、`get_workflow(id)`、`delete_workflow(id)`
-- **Step**：`add_step(workflow_id, name, description=..., creator=..., on_before_path=..., ...)`、`delete_step`、`edit_step`、`re_run_step`
+- **Step**：`add_step`（在结束节点前追加过程 step）、`add_step_after`（在指定 step 后插入过程 step，不可在结束节点后插入）、`delete_step`（起始/结束节点不可删）、`edit_step`、`re_run_step`
+
+**说明**：当已注入 `db` 且 `persist_enabled=True` 时，**create_workflow / add_step / add_step_after / add_task / edit_step / edit_task / delete_step / delete_task / delete_workflow** 在操作完成后会**自动同步到数据库**。上述方法均为 **async**，调用时需 **await**。
 - **Task**：`add_task(workflow_id, step_id, name, description=..., creator=..., handler_path, params=..., ...)`、`delete_task`、`edit_task`、`re_run_task`
 - **执行**：`run_workflow(workflow_id, context)`、`re_run_step`、`re_run_task`
 
@@ -82,14 +197,16 @@ async def main():
 `WorkflowConfig`：
 
 - **执行**：`step_timeout`、`task_timeout`、`max_task_concurrent`（Step 内 Task 并发上限，0 表示不限制）。
-- **持久化**：`persist_enabled`、`collection_name`。启用时需在创建服务时传入 `db`（`AsyncIOMotorDatabase`）。
+- **持久化**：`persist_enabled`；三张表名 `workflow_collection_name`、`step_collection_name`、`task_collection_name`。启用时需在创建服务时传入 `db`（`AsyncIOMotorDatabase`）。
 
 可通过 `WorkflowConfig.from_env()` 从环境变量加载。
 
 | 环境变量 | 说明 | 默认 |
 |----------|------|------|
 | `WORKFLOW_PERSIST_ENABLED` | 是否启用持久化 | false |
-| `WORKFLOW_COLLECTION_NAME` | 存储 workflow 的集合名 | workflows |
+| `WORKFLOW_COLLECTION_NAME` | workflow 表/集合名 | workflows |
+| `WORKFLOW_STEP_COLLECTION_NAME` | step 表/集合名 | workflow_steps |
+| `WORKFLOW_TASK_COLLECTION_NAME` | task 表/集合名 | workflow_tasks |
 | `WORKFLOW_STEP_TIMEOUT` | Step 超时（秒） | 0 |
 | `WORKFLOW_TASK_TIMEOUT` | Task 超时（秒） | 0 |
 | `WORKFLOW_MAX_TASK_CONCURRENT` | Step 内 Task 并发上限 | 0 |
@@ -144,34 +261,51 @@ Handler 可返回 `dict`（如 `{"type": "text", "content": "..."}` 或 `{"type"
 - **TaskResultContent(type, content)**：模型类，含 `to_dict()` / `from_dict()`，便于落库与反序列化。
 - **Workflow.task_results**：`Dict[task_id, TaskResultContent]`，与 DB 中 `task_results` 一致；加载 workflow 时会带回。
 
-## 持久化（以 Spec 为源，含 task 结果）
+## 持久化（三张表，按关联 id 查询）
 
-以 **WorkflowSpec** 为源存储 workflow 实例；文档中同时保存已执行 task 的结果。
+Workflow / Step / Task **各占一张表**，通过 `parent_workflow_id`、`parent_step_id`、`previous_step_id`、`next_step_id` 等关联 id 查询；**只改单个 step 或 task 时只更新对应表**，避免整份文档重写。
 
-- 文档结构（完整实例）：`_id`、`name`、`description`、`creator`、`created_at`、`updated_at`、`step_ids`、`steps`（含每 step 的 id/父 workflow/上一步/下一步/创建者/时间/task_ids/名称/描述及嵌套的 `tasks`）、`task_results`、`spec`（兼容）。
-- **save_workflow_spec(...)**：按 Spec 写入，可带 `creator`、`description`；返回 `_id`。
-- **save_workflow(db, collection_name, workflow)**：将完整 Workflow 实例写入 DB。
-- **load_workflow_spec(...)**：读出 WorkflowSpec。
-- **load_workflow_from_db(...)**：若文档含完整 `steps`（含 `tasks`）则反序列化为完整 Workflow；否则从 spec 解析并叠加 `task_results` 与 name/description/creator/created_at。
-- **update_workflow_spec(...)**：更新已有文档的 spec。
-- **save_workflow_task_result(db, collection_name, workflow_id, task_id, result_content)**：将单个 task 结果写入 `task_results[task_id]`。
-- **workflow_to_doc(w)** / **doc_to_workflow(doc)**：完整实例与文档互转。
+- **workflow 表**：`_id`、`name`、`description`、`creator`、`created_at`、`first_step_id`、`end_step_id`、`updated_at`。
+- **step 表**：`_id`、`type`、`parent_workflow_id`、`previous_step_id`、`next_step_id`、`name`、`description`、`creator`、`created_at`、回调路径等。
+- **task 表**：`_id`、`parent_step_id`、`parent_workflow_id`、`name`、`description`、`creator`、`created_at`、`run_status`、`handler_path`、`params`、`result` 等。
 
-当服务配置了 `persist_enabled` 且注入了 `db` 时，`run_workflow` 与 `re_run_task` 会在成功完成后自动将 task 结果写入 DB。
+**仓库接口**：
+
+- **save_workflow_meta(db, workflow_collection, workflow)**：仅写 workflow 表一行。
+- **save_step** / **update_step**：仅写/更新 step 表。
+- **save_task** / **update_task** / **update_task_result**：仅写/更新 task 表。
+- **load_workflow_from_db(db, workflow_collection, step_collection, task_collection, workflow_id)**：按三表组装完整 Workflow（先查 workflow，再按 parent_workflow_id 查 steps，再按 parent_step_id 查 tasks）。
+- **delete_workflow_cascade**：级联删除 workflow 表一行及该 workflow 下所有 step、task。
+- **delete_step_cascade**：级联删除 step 表一行及该 step 下所有 task。
+- **save_workflow_task_result(db, task_collection, task_id, run_status, result_content)**：仅更新 task 表的 `run_status` 与 `result`。
+
+当服务配置了 `persist_enabled` 且注入了 `db` 时，create/add/edit/delete 会**只同步对应表**；`run_workflow` / `re_run_task` 成功后将 task 结果写入 **task 表**。
 
 ```python
 from core.mongodb import get_database
 from packages.workflow import (
-    save_workflow_spec,
     load_workflow_from_db,
     create_workflow_service,
 )
 
 db = get_database()
-spec = dict_to_workflow_spec(ai_response_json)
-wid = await save_workflow_spec(db, "workflows", spec, name=spec.name)
-w = await load_workflow_from_db(db, "workflows", wid)
-svc = create_workflow_service()
+# 三表名需与 config 一致（或从 config 取）
+w = await load_workflow_from_db(db, "workflows", "workflow_steps", "workflow_tasks", workflow_id)
+svc = create_workflow_service(config=config, db=db)
 svc._workflows[w.id] = w
 result = await svc.run_workflow(w.id, context={})
 ```
+
+## 模块自检与待优化
+
+**本次已修复/统一：**
+
+- **workflow_to_doc**：导出时包含 `first_step_id`、`end_step_id`，与三表元数据一致。
+- **parse_ai_workflow**：`workflow_id` 为空时自动生成带前缀 id；解析结果统一包一层 Start/End 节点并设置 `first_step_id`/`end_step_id`，与 `create_workflow` 结构一致。
+- **workflow_to_spec**：仅导出 type=`process` 的 step，不包含 Start/End。
+- **delete_task** / **edit_task**：起始/结束节点上禁止操作（与 add_task 一致）。
+
+**可选后续优化：**
+
+- **step_timeout / task_timeout**：配置项已存在，执行层尚未用 `asyncio.wait_for` 做超时，可按需加上。
+- **MongoDB 索引**：step 表按 `parent_workflow_id`、task 表按 `parent_step_id` / `parent_workflow_id` 查询，数据量大时建议加对应索引。

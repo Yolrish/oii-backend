@@ -12,6 +12,21 @@ from typing import Any, Dict, List, Literal, Optional
 import uuid
 
 
+def _new_workflow_id() -> str:
+    """生成带前缀的 workflow id，便于区分类型"""
+    return "workflow_" + str(uuid.uuid4())
+
+
+def _new_step_id() -> str:
+    """生成带前缀的 step id，便于区分类型"""
+    return "step_" + str(uuid.uuid4())
+
+
+def _new_task_id() -> str:
+    """生成带前缀的 task id，便于区分类型"""
+    return "task_" + str(uuid.uuid4())
+
+
 # ---------- Task 结果内容（持久化格式） ----------
 
 TaskResultType = Literal["text", "image", "video", "audio"]
@@ -78,7 +93,7 @@ class Task:
     存储：id、父 step/workflow id、创建者、创建时间、运行状态、名称、描述、函数字符信息（handler_path 等）、执行结果。
     执行时由服务将 handler_path 解析为 callable 再执行。
     """
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    id: str = field(default_factory=_new_task_id)
     name: str = ""
     description: str = ""
     # 父 step 与父 workflow 的 id
@@ -115,30 +130,45 @@ class TaskResult:
 
 # ---------- Step ----------
 
+# Step 类型：start（链头，不可删/不可加 task）、process、end（链尾，不可删/不可加 task）
+StepType = Literal["start", "process", "end"]
+STEP_TYPE_START = "start"
+STEP_TYPE_PROCESS = "process"
+STEP_TYPE_END = "end"
+STEP_TYPES: tuple = ("start", "process", "end")
+
+
+def _normalize_step_type(t: str) -> str:
+    """将 type 规范为 start/process/end 之一，否则退回 process"""
+    if t in STEP_TYPES:
+        return t
+    return STEP_TYPE_PROCESS
+
+
 @dataclass
 class Step:
     """
     工作流步骤
-    存储：id、父 workflow id、上一个/下一个 step id、创建者、创建时间、拥有的 task id 列表、名称、描述。
-    步骤内 Task 并行，步骤间按 previous/next 串行。
+    存储：id、type（start/process/end）、父 workflow id、上一个/下一个 step id、创建者、创建时间、拥有的 task 列表、名称、描述。
+    起始/结尾节点（type=start/end）不可删除、不可添加 task；start 的 previous_step_id 为空，end 的 next_step_id 为空。
     """
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    id: str = field(default_factory=_new_step_id)
+    type: str = STEP_TYPE_PROCESS  # start | process | end
     name: str = ""
     description: str = ""
-    # 父 workflow、链式前后 step
     parent_workflow_id: str = ""
     previous_step_id: str = ""
     next_step_id: str = ""
     creator: str = ""
     created_at: Optional[datetime] = None
     tasks: List[Task] = field(default_factory=list)
-    # 生命周期回调的模块路径
     on_before_path: str = ""
     on_start_path: str = ""
     on_done_path: str = ""
     on_retry_path: str = ""
 
     def __post_init__(self) -> None:
+        self.type = _normalize_step_type(self.type)
         if self.tasks is None:
             self.tasks = []
 
@@ -163,15 +193,20 @@ class StepResult:
 class Workflow:
     """
     动态工作流
-    存储：id、创建者、创建时间、拥有的 step id 列表、名称、描述。
+    存储：id、创建者、创建时间、拥有的 step id 列表、名称、描述、起始 step id。
     Step 以链形式串行执行，Step 内 Task 并行。
+    first_step_id：链上的第一个 step，执行时由此开始；该起始 step 不可被删除。
     task_results: 已执行 task 的结果，key 为 task_id，与 DB 一致。
     """
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    id: str = field(default_factory=_new_workflow_id)
     name: str = ""
     description: str = ""
     creator: str = ""
     created_at: Optional[datetime] = None
+    # 起始 step 的 id（链头），不可删除
+    first_step_id: str = ""
+    # 结束 step 的 id（链尾），不可删除
+    end_step_id: str = ""
     steps: List[Step] = field(default_factory=list)
     task_results: Dict[str, TaskResultContent] = field(default_factory=dict)
 

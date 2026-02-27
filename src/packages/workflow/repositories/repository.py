@@ -1,8 +1,11 @@
 """
-基于 AI Spec 的 Workflow 持久化
+Workflow 持久化：三张表（workflow / step / task），通过关联 id 查询
 
-workflow 实例文档存储：id、创建者、创建时间、名称、描述、step_ids、steps（含 task 列表）、task_results。
-支持从完整文档反序列化为 Workflow，或从 spec 解析后叠加 meta 与 task_results。
+- workflows：workflow 元数据（id、名称、描述、创建者、创建时间等）
+- workflow_steps：step 元数据（id、parent_workflow_id、previous_step_id、next_step_id、名称、描述等）
+- workflow_tasks：task 元数据（id、parent_step_id、parent_workflow_id、运行状态、结果等）
+
+单条修改只更新对应表，避免整份文档重写。
 """
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -12,6 +15,7 @@ from ..models.models import (
     Step,
     Task,
     TaskResultContent,
+    STEP_TYPE_PROCESS,
 )
 from ..ai_spec import (
     WorkflowSpec,
@@ -21,15 +25,431 @@ from ..ai_spec import (
 )
 
 
-async def _find_workflow_doc(db: Any, collection_name: str, workflow_id: str) -> Optional[Any]:
-    """按 workflow_id 查找文档；支持 _id 为 ObjectId 或 str"""
+# ---------- 三表文档转换 ----------
+
+
+def _workflow_meta_to_doc(w: Workflow) -> Dict[str, Any]:
+    """Workflow 元数据 → workflow 表一行（不含 steps/tasks）"""
+    now = datetime.utcnow()
+    return {
+        "_id": w.id,
+        "name": w.name,
+        "description": w.description or "",
+        "creator": w.creator or "",
+        "created_at": w.created_at,
+        "first_step_id": w.first_step_id or "",
+        "end_step_id": w.end_step_id or "",
+        "updated_at": now,
+    }
+
+
+def _step_to_doc(s: Step) -> Dict[str, Any]:
+    """Step → step 表一行（不含嵌套 tasks）"""
+    return {
+        "_id": s.id,
+        "type": s.type or STEP_TYPE_PROCESS,
+        "parent_workflow_id": s.parent_workflow_id or "",
+        "previous_step_id": s.previous_step_id or "",
+        "next_step_id": s.next_step_id or "",
+        "name": s.name,
+        "description": s.description or "",
+        "creator": s.creator or "",
+        "created_at": s.created_at,
+        "on_before_path": s.on_before_path or "",
+        "on_start_path": s.on_start_path or "",
+        "on_done_path": s.on_done_path or "",
+        "on_retry_path": s.on_retry_path or "",
+        "updated_at": datetime.utcnow(),
+    }
+
+
+def _task_to_doc(t: Task) -> Dict[str, Any]:
+    """Task → task 表一行"""
+    return {
+        "_id": t.id,
+        "parent_step_id": t.parent_step_id or "",
+        "parent_workflow_id": t.parent_workflow_id or "",
+        "name": t.name,
+        "description": t.description or "",
+        "creator": t.creator or "",
+        "created_at": t.created_at,
+        "run_status": t.run_status,
+        "handler_path": t.handler_path or "",
+        "params": t.params if isinstance(t.params, dict) else {},
+        "on_before_path": t.on_before_path or "",
+        "on_start_path": t.on_start_path or "",
+        "on_done_path": t.on_done_path or "",
+        "on_retry_path": t.on_retry_path or "",
+        "result": t.result.to_dict() if t.result else None,
+        "updated_at": datetime.utcnow(),
+    }
+
+
+def _doc_to_workflow_meta(doc: Dict[str, Any]) -> Workflow:
+    """workflow 表一行 → Workflow（仅元数据，steps 为空）"""
+    wid = str(doc.get("_id", ""))
+    created_at = doc.get("created_at")
+    return Workflow(
+        id=wid,
+        name=str(doc.get("name", "")),
+        description=str(doc.get("description", "")),
+        creator=str(doc.get("creator", "")),
+        created_at=created_at if isinstance(created_at, datetime) else None,
+        first_step_id=str(doc.get("first_step_id", "")),
+        end_step_id=str(doc.get("end_step_id", "")),
+        steps=[],
+        task_results={},
+    )
+
+
+def _doc_to_step(doc: Dict[str, Any]) -> Step:
+    """step 表一行 → Step（tasks 为空，由 load 时按 parent_step_id 填充）"""
+    sid = str(doc.get("_id", ""))
+    created_at = doc.get("created_at")
+    return Step(
+        id=sid,
+        type=str(doc.get("type", STEP_TYPE_PROCESS)),
+        name=str(doc.get("name", "")),
+        description=str(doc.get("description", "")),
+        parent_workflow_id=str(doc.get("parent_workflow_id", "")),
+        previous_step_id=str(doc.get("previous_step_id", "")),
+        next_step_id=str(doc.get("next_step_id", "")),
+        creator=str(doc.get("creator", "")),
+        created_at=created_at if isinstance(created_at, datetime) else None,
+        tasks=[],
+        on_before_path=str(doc.get("on_before_path", "")),
+        on_start_path=str(doc.get("on_start_path", "")),
+        on_done_path=str(doc.get("on_done_path", "")),
+        on_retry_path=str(doc.get("on_retry_path", "")),
+    )
+
+
+def _doc_to_task(doc: Dict[str, Any]) -> Task:
+    """task 表一行 → Task"""
+    tid = str(doc.get("_id", ""))
+    created_at = doc.get("created_at")
+    result = doc.get("result")
+    return Task(
+        id=tid,
+        name=str(doc.get("name", "")),
+        description=str(doc.get("description", "")),
+        parent_step_id=str(doc.get("parent_step_id", "")),
+        parent_workflow_id=str(doc.get("parent_workflow_id", "")),
+        creator=str(doc.get("creator", "")),
+        created_at=created_at if isinstance(created_at, datetime) else None,
+        run_status=str(doc.get("run_status", "pending")),
+        handler_path=str(doc.get("handler_path", "")),
+        params=doc.get("params") or {},
+        on_before_path=str(doc.get("on_before_path", "")),
+        on_start_path=str(doc.get("on_start_path", "")),
+        on_done_path=str(doc.get("on_done_path", "")),
+        on_retry_path=str(doc.get("on_retry_path", "")),
+        result=TaskResultContent.from_dict(result) if result else None,
+    )
+
+
+async def _find_doc_by_id(db: Any, collection: str, id_value: str) -> Optional[Dict[str, Any]]:
+    """按 _id 查一条；支持 str 或 ObjectId"""
     try:
         from bson import ObjectId
-        doc = await db[collection_name].find_one({"_id": ObjectId(workflow_id)})
+        doc = await db[collection].find_one({"_id": ObjectId(id_value)})
     except Exception:
         doc = None
     if doc is None:
-        doc = await db[collection_name].find_one({"_id": workflow_id})
+        doc = await db[collection].find_one({"_id": id_value})
+    return doc
+
+
+# ---------- Workflow 表 ----------
+
+
+async def save_workflow_meta(
+    db: Any,
+    workflow_collection: str,
+    workflow: Workflow,
+) -> bool:
+    """仅写入 workflow 表一行（元数据）"""
+    doc = _workflow_meta_to_doc(workflow)
+    try:
+        from bson import ObjectId
+        await db[workflow_collection].replace_one(
+            {"_id": ObjectId(workflow.id)},
+            doc,
+            upsert=True,
+        )
+    except Exception:
+        await db[workflow_collection].replace_one(
+            {"_id": workflow.id},
+            doc,
+            upsert=True,
+        )
+    return True
+
+
+async def load_workflow_meta(
+    db: Any,
+    workflow_collection: str,
+    workflow_id: str,
+) -> Optional[Workflow]:
+    """从 workflow 表加载一条，返回 Workflow（steps 为空）"""
+    doc = await _find_doc_by_id(db, workflow_collection, workflow_id)
+    if not doc:
+        return None
+    return _doc_to_workflow_meta(doc)
+
+
+# ---------- Step 表 ----------
+
+
+async def save_step(
+    db: Any,
+    step_collection: str,
+    step: Step,
+) -> bool:
+    """写入或覆盖 step 表一行"""
+    doc = _step_to_doc(step)
+    try:
+        from bson import ObjectId
+        await db[step_collection].replace_one(
+            {"_id": ObjectId(step.id)},
+            doc,
+            upsert=True,
+        )
+    except Exception:
+        await db[step_collection].replace_one(
+            {"_id": step.id},
+            doc,
+            upsert=True,
+        )
+    return True
+
+
+async def update_step(
+    db: Any,
+    step_collection: str,
+    step: Step,
+) -> bool:
+    """更新 step 表一行（与 save_step 同，按 id 覆盖）"""
+    return await save_step(db, step_collection, step)
+
+
+async def load_steps_by_workflow(
+    db: Any,
+    step_collection: str,
+    workflow_id: str,
+) -> List[Step]:
+    """按 parent_workflow_id 查询该 workflow 下所有 step，按链顺序排列"""
+    cursor = db[step_collection].find({"parent_workflow_id": workflow_id})
+    docs = await cursor.to_list(length=None)
+    steps = [_doc_to_step(d) for d in docs]
+    if not steps:
+        return []
+    # 按 previous_step_id / next_step_id 排成链序
+    by_id = {s.id: s for s in steps}
+    ordered = []
+    # 找链头：previous_step_id 为空或不在本 workflow 的 step 中
+    head = None
+    for s in steps:
+        if not s.previous_step_id or s.previous_step_id not in by_id:
+            head = s
+            break
+    if not head:
+        return steps  # 成环或异常，返回原序
+    current = head
+    while current:
+        ordered.append(current)
+        next_id = current.next_step_id
+        current = by_id.get(next_id) if next_id else None
+    return ordered
+
+
+async def delete_step_from_db(
+    db: Any,
+    step_collection: str,
+    step_id: str,
+) -> bool:
+    """删除 step 表一行"""
+    try:
+        from bson import ObjectId
+        res = await db[step_collection].delete_one({"_id": ObjectId(step_id)})
+    except Exception:
+        res = await db[step_collection].delete_one({"_id": step_id})
+    return res.deleted_count > 0
+
+
+async def delete_steps_by_workflow(
+    db: Any,
+    step_collection: str,
+    workflow_id: str,
+) -> int:
+    """删除该 workflow 下所有 step"""
+    res = await db[step_collection].delete_many({"parent_workflow_id": workflow_id})
+    return res.deleted_count
+
+
+# ---------- Task 表 ----------
+
+
+async def save_task(
+    db: Any,
+    task_collection: str,
+    task: Task,
+) -> bool:
+    """写入或覆盖 task 表一行"""
+    doc = _task_to_doc(task)
+    try:
+        from bson import ObjectId
+        await db[task_collection].replace_one(
+            {"_id": ObjectId(task.id)},
+            doc,
+            upsert=True,
+        )
+    except Exception:
+        await db[task_collection].replace_one(
+            {"_id": task.id},
+            doc,
+            upsert=True,
+        )
+    return True
+
+
+async def update_task(
+    db: Any,
+    task_collection: str,
+    task: Task,
+) -> bool:
+    """更新 task 表一行"""
+    return await save_task(db, task_collection, task)
+
+
+async def update_task_result(
+    db: Any,
+    task_collection: str,
+    task_id: str,
+    run_status: str,
+    result_content: TaskResultContent,
+) -> bool:
+    """仅更新 task 的 run_status 与 result（执行完成后调用）"""
+    now = datetime.utcnow()
+    try:
+        from bson import ObjectId
+        res = await db[task_collection].update_one(
+            {"_id": ObjectId(task_id)},
+            {"$set": {"run_status": run_status, "result": result_content.to_dict(), "updated_at": now}},
+        )
+    except Exception:
+        res = await db[task_collection].update_one(
+            {"_id": task_id},
+            {"$set": {"run_status": run_status, "result": result_content.to_dict(), "updated_at": now}},
+        )
+    return res.matched_count > 0
+
+
+async def load_tasks_by_step(
+    db: Any,
+    task_collection: str,
+    step_id: str,
+) -> List[Task]:
+    """按 parent_step_id 查询该 step 下所有 task"""
+    cursor = db[task_collection].find({"parent_step_id": step_id})
+    docs = await cursor.to_list(length=None)
+    return [_doc_to_task(d) for d in docs]
+
+
+async def delete_task_from_db(
+    db: Any,
+    task_collection: str,
+    task_id: str,
+) -> bool:
+    """删除 task 表一行"""
+    try:
+        from bson import ObjectId
+        res = await db[task_collection].delete_one({"_id": ObjectId(task_id)})
+    except Exception:
+        res = await db[task_collection].delete_one({"_id": task_id})
+    return res.deleted_count > 0
+
+
+async def delete_tasks_by_step(
+    db: Any,
+    task_collection: str,
+    step_id: str,
+) -> int:
+    """删除该 step 下所有 task"""
+    res = await db[task_collection].delete_many({"parent_step_id": step_id})
+    return res.deleted_count
+
+
+async def delete_tasks_by_workflow(
+    db: Any,
+    task_collection: str,
+    workflow_id: str,
+) -> int:
+    """删除该 workflow 下所有 task"""
+    res = await db[task_collection].delete_many({"parent_workflow_id": workflow_id})
+    return res.deleted_count
+
+
+# ---------- 组装与级联删除 ----------
+
+
+async def load_workflow_from_db(
+    db: Any,
+    workflow_collection: str,
+    step_collection: str,
+    task_collection: str,
+    workflow_id: str,
+) -> Optional[Workflow]:
+    """
+    从三张表组装完整 Workflow：workflow 表 + step 表（parent_workflow_id）+ task 表（parent_step_id）。
+    """
+    w = await load_workflow_meta(db, workflow_collection, workflow_id)
+    if not w:
+        return None
+    steps = await load_steps_by_workflow(db, step_collection, workflow_id)
+    for s in steps:
+        s.tasks = await load_tasks_by_step(db, task_collection, s.id)
+        for t in s.tasks:
+            if t.result:
+                w.task_results[t.id] = t.result
+    w.steps = steps
+    return w
+
+
+async def delete_workflow_cascade(
+    db: Any,
+    workflow_collection: str,
+    step_collection: str,
+    task_collection: str,
+    workflow_id: str,
+) -> bool:
+    """级联删除：workflow 表一行 + 该 workflow 下所有 step + 所有 task"""
+    await delete_tasks_by_workflow(db, task_collection, workflow_id)
+    await delete_steps_by_workflow(db, step_collection, workflow_id)
+    try:
+        from bson import ObjectId
+        res = await db[workflow_collection].delete_one({"_id": ObjectId(workflow_id)})
+    except Exception:
+        res = await db[workflow_collection].delete_one({"_id": workflow_id})
+    return res.deleted_count > 0
+
+
+async def delete_step_cascade(
+    db: Any,
+    step_collection: str,
+    task_collection: str,
+    step_id: str,
+) -> bool:
+    """级联删除：step 表一行 + 该 step 下所有 task"""
+    await delete_tasks_by_step(db, task_collection, step_id)
+    return await delete_step_from_db(db, step_collection, step_id)
+
+
+# ---------- Spec 单表（可选，用于仅存 spec 的场景） ----------
+
+
+async def _find_workflow_doc(db: Any, collection_name: str, workflow_id: str) -> Optional[Any]:
+    doc = await _find_doc_by_id(db, collection_name, workflow_id)
     return doc
 
 
@@ -43,18 +463,16 @@ async def save_workflow_spec(
     description: Optional[str] = None,
 ) -> str:
     """
-    将 WorkflowSpec（AI 指定格式）写入数据库，作为持久化源。
-    可同时写入 name、creator、description；返回文档 _id。
+    将 WorkflowSpec 写入 workflow 表（单条文档含 spec）。
+    若已用三表存储，workflow 表仅存元数据，可不使用本函数。
     """
     from bson import ObjectId
-
     now = datetime.utcnow()
     doc = {
         "name": name if name is not None else spec.name,
         "description": description or "",
         "creator": creator or "",
         "spec": workflow_spec_to_dict(spec),
-        "task_results": {},
         "created_at": now,
         "updated_at": now,
     }
@@ -75,7 +493,6 @@ async def load_workflow_spec(
     collection_name: str,
     workflow_id: str,
 ) -> Optional[WorkflowSpec]:
-    """从数据库按 id 加载 WorkflowSpec（AI 指定格式）；支持 _id 为字符串或 ObjectId"""
     doc = await _find_workflow_doc(db, collection_name, workflow_id)
     if not doc:
         return None
@@ -85,196 +502,6 @@ async def load_workflow_spec(
     return dict_to_workflow_spec(spec_dict)
 
 
-def _doc_task_results_to_map(doc: Any) -> Dict[str, TaskResultContent]:
-    """从文档的 task_results 字段转为 Dict[str, TaskResultContent]"""
-    raw = doc.get("task_results") or {}
-    return {
-        str(k): TaskResultContent.from_dict(v)
-        for k, v in raw.items()
-    }
-
-
-# ---------- 完整 workflow 实例序列化（含 id、创建者、时间、描述、关联 id、运行状态、结果） ----------
-
-
-def _task_to_doc(t: Task) -> Dict[str, Any]:
-    """Task → 可落库 dict"""
-    return {
-        "id": t.id,
-        "name": t.name,
-        "description": t.description or "",
-        "parent_step_id": t.parent_step_id or "",
-        "parent_workflow_id": t.parent_workflow_id or "",
-        "creator": t.creator or "",
-        "created_at": t.created_at,
-        "run_status": t.run_status,
-        "handler_path": t.handler_path or "",
-        "params": t.params if isinstance(t.params, dict) else {},
-        "on_before_path": t.on_before_path or "",
-        "on_start_path": t.on_start_path or "",
-        "on_done_path": t.on_done_path or "",
-        "on_retry_path": t.on_retry_path or "",
-        "result": t.result.to_dict() if t.result else None,
-    }
-
-
-def _step_to_doc(s: Step, workflow_id: str) -> Dict[str, Any]:
-    """Step → 可落库 dict（含 tasks）"""
-    return {
-        "id": s.id,
-        "name": s.name,
-        "description": s.description or "",
-        "parent_workflow_id": s.parent_workflow_id or workflow_id,
-        "previous_step_id": s.previous_step_id or "",
-        "next_step_id": s.next_step_id or "",
-        "creator": s.creator or "",
-        "created_at": s.created_at,
-        "task_ids": s.task_ids,
-        "on_before_path": s.on_before_path or "",
-        "on_start_path": s.on_start_path or "",
-        "on_done_path": s.on_done_path or "",
-        "on_retry_path": s.on_retry_path or "",
-        "tasks": [_task_to_doc(t) for t in s.tasks],
-    }
-
-
-def workflow_to_doc(w: Workflow) -> Dict[str, Any]:
-    """Workflow 实例 → 可写入 DB 的完整文档"""
-    from ..ai_spec import workflow_to_spec as _workflow_to_spec
-    now = datetime.utcnow()
-    return {
-        "_id": w.id,
-        "name": w.name,
-        "description": w.description or "",
-        "creator": w.creator or "",
-        "created_at": w.created_at,
-        "updated_at": now,
-        "step_ids": w.step_ids,
-        "steps": [_step_to_doc(s, w.id) for s in w.steps],
-        "task_results": {tid: tr.to_dict() for tid, tr in w.task_results.items()},
-        "spec": workflow_spec_to_dict(_workflow_to_spec(w)),  # 兼容：可由 spec 还原结构
-    }
-
-
-def _doc_to_task(d: Dict[str, Any]) -> Task:
-    """文档中的 task dict → Task"""
-    created_at = d.get("created_at")
-    result = d.get("result")
-    return Task(
-        id=str(d.get("id", "")),
-        name=str(d.get("name", "")),
-        description=str(d.get("description", "")),
-        parent_step_id=str(d.get("parent_step_id", "")),
-        parent_workflow_id=str(d.get("parent_workflow_id", "")),
-        creator=str(d.get("creator", "")),
-        created_at=created_at if isinstance(created_at, datetime) else None,
-        run_status=str(d.get("run_status", "pending")),
-        handler_path=str(d.get("handler_path", "")),
-        params=d.get("params") or {},
-        on_before_path=str(d.get("on_before_path", "")),
-        on_start_path=str(d.get("on_start_path", "")),
-        on_done_path=str(d.get("on_done_path", "")),
-        on_retry_path=str(d.get("on_retry_path", "")),
-        result=TaskResultContent.from_dict(result) if result else None,
-    )
-
-
-def _doc_to_step(d: Dict[str, Any], workflow_id: str) -> Step:
-    """文档中的 step dict（含 tasks）→ Step"""
-    created_at = d.get("created_at")
-    tasks_data = d.get("tasks") or []
-    return Step(
-        id=str(d.get("id", "")),
-        name=str(d.get("name", "")),
-        description=str(d.get("description", "")),
-        parent_workflow_id=str(d.get("parent_workflow_id", "") or workflow_id),
-        previous_step_id=str(d.get("previous_step_id", "")),
-        next_step_id=str(d.get("next_step_id", "")),
-        creator=str(d.get("creator", "")),
-        created_at=created_at if isinstance(created_at, datetime) else None,
-        tasks=[_doc_to_task(t) for t in tasks_data],
-        on_before_path=str(d.get("on_before_path", "")),
-        on_start_path=str(d.get("on_start_path", "")),
-        on_done_path=str(d.get("on_done_path", "")),
-        on_retry_path=str(d.get("on_retry_path", "")),
-    )
-
-
-def doc_to_workflow(doc: Dict[str, Any]) -> Workflow:
-    """完整文档 → Workflow 实例"""
-    workflow_id = str(doc.get("_id", "") or doc.get("id", ""))
-    created_at = doc.get("created_at")
-    steps_data = doc.get("steps") or []
-    w = Workflow(
-        id=workflow_id,
-        name=str(doc.get("name", "")),
-        description=str(doc.get("description", "")),
-        creator=str(doc.get("creator", "")),
-        created_at=created_at if isinstance(created_at, datetime) else None,
-        steps=[_doc_to_step(s, workflow_id) for s in steps_data],
-        task_results=_doc_task_results_to_map(doc),
-    )
-    return w
-
-
-async def save_workflow(
-    db: Any,
-    collection_name: str,
-    workflow: Workflow,
-) -> bool:
-    """
-    将完整 Workflow 实例写入数据库（含 id、创建者、创建时间、名称、描述、steps、task_results、spec）。
-    """
-    from bson import ObjectId
-    doc = workflow_to_doc(workflow)
-    try:
-        await db[collection_name].replace_one(
-            {"_id": ObjectId(workflow.id)},
-            doc,
-            upsert=True,
-        )
-    except Exception:
-        await db[collection_name].replace_one(
-            {"_id": workflow.id},
-            doc,
-            upsert=True,
-        )
-    return True
-
-
-async def load_workflow_from_db(
-    db: Any,
-    collection_name: str,
-    workflow_id: str,
-) -> Optional[Any]:
-    """
-    从数据库加载为 Workflow 实例。
-    若文档含完整 steps（含 tasks）则反序列化为完整 Workflow（id、创建者、时间、描述、关联 id、运行状态、结果等）；
-    否则从 spec 解析并叠加 task_results 与文档中的 name、description、creator、created_at。
-    """
-    doc = await _find_workflow_doc(db, collection_name, workflow_id)
-    if not doc:
-        return None
-    steps_data = doc.get("steps")
-    if isinstance(steps_data, list) and (len(steps_data) == 0 or isinstance(steps_data[0], dict)):
-        return doc_to_workflow(doc)
-    spec_dict = doc.get("spec")
-    if not spec_dict:
-        return None
-    spec = dict_to_workflow_spec(spec_dict)
-    w = parse_ai_workflow(spec, workflow_id=workflow_id)
-    w.task_results = _doc_task_results_to_map(doc)
-    if doc.get("name") is not None:
-        w.name = str(doc["name"])
-    if doc.get("description") is not None:
-        w.description = str(doc["description"])
-    if doc.get("creator") is not None:
-        w.creator = str(doc["creator"])
-    if doc.get("created_at") is not None and isinstance(doc["created_at"], datetime):
-        w.created_at = doc["created_at"]
-    return w
-
-
 async def update_workflow_spec(
     db: Any,
     collection_name: str,
@@ -282,14 +509,9 @@ async def update_workflow_spec(
     spec: WorkflowSpec,
     name: Optional[str] = None,
 ) -> bool:
-    """更新已存在的 workflow 文档的 spec；支持 _id 为字符串或 ObjectId"""
     from bson import ObjectId
-
     now = datetime.utcnow()
-    update = {
-        "spec": workflow_spec_to_dict(spec),
-        "updated_at": now,
-    }
+    update = {"spec": workflow_spec_to_dict(spec), "updated_at": now}
     if name is not None:
         update["name"] = name
     try:
@@ -305,29 +527,66 @@ async def update_workflow_spec(
     return res.modified_count > 0 or res.matched_count > 0
 
 
-async def save_workflow_task_result(
+async def delete_workflow_from_db(
     db: Any,
     collection_name: str,
     workflow_id: str,
+) -> bool:
+    """仅删 workflow 表一行（不级联）。三表模式下请用 delete_workflow_cascade。"""
+    try:
+        from bson import ObjectId
+        res = await db[collection_name].delete_one({"_id": ObjectId(workflow_id)})
+    except Exception:
+        res = await db[collection_name].delete_one({"_id": workflow_id})
+    return res.deleted_count > 0
+
+
+async def save_workflow_task_result(
+    db: Any,
+    task_collection: str,
     task_id: str,
+    run_status: str,
     result_content: TaskResultContent,
 ) -> bool:
-    """
-    将已执行 task 的结果写入 workflow 文档的 task_results 字段。
-    格式：task_results[task_id] = { "type": "text"|"image"|"video"|"audio", "content": "..." }。
-    """
-    from bson import ObjectId
+    """将 task 执行结果写入 task 表（更新 run_status 与 result）"""
+    return await update_task_result(db, task_collection, task_id, run_status, result_content)
 
+
+# ---------- 单表整份读写（可选） ----------
+
+
+def workflow_to_doc(w: Workflow) -> Dict[str, Any]:
+    """Workflow 整份导出为单文档；三表模式下可用 save_workflow_meta + save_step + save_task 分表写入"""
+    from ..ai_spec import workflow_to_spec as _workflow_to_spec
     now = datetime.utcnow()
-    payload = result_content.to_dict()
-    try:
-        res = await db[collection_name].update_one(
-            {"_id": ObjectId(workflow_id)},
-            {"$set": {f"task_results.{task_id}": payload, "updated_at": now}},
-        )
-    except Exception:
-        res = await db[collection_name].update_one(
-            {"_id": workflow_id},
-            {"$set": {f"task_results.{task_id}": payload, "updated_at": now}},
-        )
-    return res.matched_count > 0
+    return {
+        "_id": w.id,
+        "name": w.name,
+        "description": w.description or "",
+        "creator": w.creator or "",
+        "created_at": w.created_at,
+        "first_step_id": w.first_step_id or "",
+        "end_step_id": w.end_step_id or "",
+        "updated_at": now,
+        "step_ids": w.step_ids,
+        "steps": [_step_to_doc(s) for s in w.steps],
+        "task_results": {tid: tr.to_dict() for tid, tr in w.task_results.items()},
+        "spec": workflow_spec_to_dict(_workflow_to_spec(w)),
+    }
+
+
+def doc_to_workflow(doc: Dict[str, Any]) -> Workflow:
+    """从单文档还原 Workflow；三表模式下请用 load_workflow_from_db"""
+    workflow_id = str(doc.get("_id", "") or doc.get("id", ""))
+    created_at = doc.get("created_at")
+    steps_data = doc.get("steps") or []
+    steps = []
+    for s in steps_data:
+        step = _doc_to_step(s)
+        step.tasks = [_doc_to_task(t) for t in s.get("tasks") or []]
+        steps.append(step)
+    w = _doc_to_workflow_meta(doc)
+    w.steps = steps
+    raw = doc.get("task_results") or {}
+    w.task_results = {str(k): TaskResultContent.from_dict(v) for k, v in raw.items()}
+    return w

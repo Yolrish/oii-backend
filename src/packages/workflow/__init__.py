@@ -12,10 +12,10 @@
     w = parse_ai_workflow(spec)
     result = await svc.run_workflow(w.id, context={})
 
-    # 持久化（以 spec 为源）
+    # 持久化（三张表：workflows / workflow_steps / workflow_tasks）
     from packages.workflow import save_workflow_spec, load_workflow_from_db
     await save_workflow_spec(db, "workflows", spec)
-    w = await load_workflow_from_db(db, "workflows", workflow_id)
+    w = await load_workflow_from_db(db, "workflows", "workflow_steps", "workflow_tasks", workflow_id)
 """
 
 from .configs import WorkflowConfig, default_config
@@ -47,11 +47,12 @@ from .ai_spec import (
 )
 from .repositories import (
     save_workflow_spec,
-    save_workflow,
+    save_workflow_meta,
     load_workflow_spec,
     load_workflow_from_db,
     update_workflow_spec,
     save_workflow_task_result,
+    delete_workflow_cascade,
     workflow_to_doc,
     doc_to_workflow,
 )
@@ -81,10 +82,11 @@ __all__ = [
     "workflow_spec_to_dict",
     "dict_to_workflow_spec",
     "save_workflow_spec",
-    "save_workflow",
+    "save_workflow_meta",
     "load_workflow_spec",
     "load_workflow_from_db",
     "update_workflow_spec",
+    "delete_workflow_cascade",
     "save_workflow_task_result",
     "workflow_to_doc",
     "doc_to_workflow",

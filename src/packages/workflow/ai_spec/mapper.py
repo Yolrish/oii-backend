@@ -4,9 +4,18 @@ AI 指定格式 → Workflow 的映射
 将 AI 返回的指定格式（WorkflowSpec）转为 Workflow/Step/Task，仅写入路径字符串，不解析为函数。
 执行时由 WorkflowService 在 run_workflow / _run_step / _run_task 中通过 resolve_handler 将路径解析为 callable 再执行。
 """
+from datetime import datetime
 from typing import Any, Dict, Optional
 
-from ..models.models import Workflow, Step, Task
+from ..models.models import (
+    Workflow,
+    Step,
+    Task,
+    STEP_TYPE_START,
+    STEP_TYPE_PROCESS,
+    STEP_TYPE_END,
+    _new_workflow_id,
+)
 from .schemas import WorkflowSpec, StepSpec, TaskSpec
 
 
@@ -24,9 +33,10 @@ def _task_spec_to_task(spec: TaskSpec) -> Task:
 
 
 def _step_spec_to_step(spec: StepSpec) -> Step:
-    """StepSpec → Step：仅写入回调路径与 tasks"""
+    """StepSpec → Step：仅写入回调路径与 tasks，type 为 process"""
     return Step(
         name=spec.name or "",
+        type=STEP_TYPE_PROCESS,
         tasks=[_task_spec_to_task(t) for t in spec.tasks],
         on_before_path=spec.on_before or "",
         on_start_path=spec.on_start or "",
@@ -42,23 +52,53 @@ def parse_ai_workflow(
     """
     将 AI 指定格式解析为 Workflow。
     只写入路径字符串，不解析为函数；执行时由服务按路径解析并执行。
-    会填充各 Step 的 parent_workflow_id、previous_step_id、next_step_id 及各 Task 的 parent_workflow_id、parent_step_id。
+    与 create_workflow 一致：自动包一层起始/结束节点，并设置 first_step_id/end_step_id，
+    便于注册到服务后使用 add_step / add_step_after 等。
     """
-    steps = [_step_spec_to_step(s) for s in spec.steps]
-    w = Workflow(
-        id=workflow_id or "",
-        name=spec.name or "",
-        steps=steps,
+    now = datetime.utcnow()
+    # 保证 workflow 有有效 id（带前缀）
+    wid = (workflow_id or "").strip() or _new_workflow_id()
+    process_steps = [_step_spec_to_step(s) for s in spec.steps]
+    # 起始/结束节点（与 create_workflow 一致）
+    start_step = Step(
+        name="Start",
+        type=STEP_TYPE_START,
+        parent_workflow_id=wid,
+        previous_step_id="",
+        next_step_id="",  # 稍后设
+        created_at=now,
     )
-    if workflow_id:
-        w.id = workflow_id
-    for i, s in enumerate(w.steps):
-        s.parent_workflow_id = w.id
-        s.previous_step_id = w.steps[i - 1].id if i > 0 else ""
-        s.next_step_id = w.steps[i + 1].id if i + 1 < len(w.steps) else ""
+    end_step = Step(
+        name="End",
+        type=STEP_TYPE_END,
+        parent_workflow_id=wid,
+        previous_step_id="",  # 稍后设
+        next_step_id="",
+        created_at=now,
+    )
+    start_step.next_step_id = end_step.id
+    # 链：Start -> process_1 -> ... -> process_n -> End
+    all_steps = [start_step] + process_steps + [end_step]
+    for i, s in enumerate(all_steps):
+        s.parent_workflow_id = wid
+        if i > 0:
+            s.previous_step_id = all_steps[i - 1].id
+        if i + 1 < len(all_steps):
+            s.next_step_id = all_steps[i + 1].id
         for t in s.tasks:
-            t.parent_workflow_id = w.id
+            t.parent_workflow_id = wid
             t.parent_step_id = s.id
+    end_step.previous_step_id = all_steps[-2].id if len(all_steps) > 1 else start_step.id
+    w = Workflow(
+        id=wid,
+        name=spec.name or "",
+        description="",
+        creator="",
+        created_at=now,
+        first_step_id=start_step.id,
+        end_step_id=end_step.id,
+        steps=all_steps,
+    )
     return w
 
 
@@ -100,10 +140,11 @@ def _step_to_step_spec(step: Step) -> StepSpec:
 
 
 def workflow_to_spec(workflow: Workflow) -> WorkflowSpec:
-    """Workflow 转为 AI 指定格式（用于持久化或回传）"""
+    """Workflow 转为 AI 指定格式（用于持久化或回传）；仅导出 process 步骤，不包含 Start/End 节点"""
+    process_steps = [s for s in workflow.steps if s.type == STEP_TYPE_PROCESS]
     return WorkflowSpec(
         name=workflow.name,
-        steps=[_step_to_step_spec(s) for s in workflow.steps],
+        steps=[_step_to_step_spec(s) for s in process_steps],
     )
 
 
