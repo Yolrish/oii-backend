@@ -119,7 +119,7 @@ class WorkflowService:
         """若 workflow 在内存则直接返回；否则若已开启持久化则从 DB 加载并放入缓存后返回；否则返回 None"""
         if workflow_id in self._workflows:
             return self._workflows[workflow_id]
-        if self._db and self.config.persist_enabled:
+        if self._db is not None and self.config.persist_enabled:
             w = await load_workflow_from_db(
                 self._db,
                 self._wf_coll(),
@@ -174,7 +174,7 @@ class WorkflowService:
         w.first_step_id = start_step.id
         w.end_step_id = end_step.id
         self._workflows[w.id] = w
-        if self._db and self.config.persist_enabled:
+        if self._db is not None and self.config.persist_enabled:
             await save_workflow_meta(self._db, self._wf_coll(), w)
             await save_step(self._db, self._step_coll(), start_step)
             await save_step(self._db, self._step_coll(), end_step)
@@ -189,7 +189,7 @@ class WorkflowService:
         lock = await self._lock_for(workflow_id)
         async with lock:
             if workflow_id in self._workflows:
-                if self._db and self.config.persist_enabled:
+                if self._db is not None and self.config.persist_enabled:
                     await delete_workflow_cascade(
                         self._db,
                         self._wf_coll(),
@@ -201,7 +201,7 @@ class WorkflowService:
                 async with self._meta_lock:
                     self._unregister_lock(workflow_id)
                 return True
-            if self._db and self.config.persist_enabled:
+            if self._db is not None and self.config.persist_enabled:
                 ok = await delete_workflow_cascade(
                     self._db,
                     self._wf_coll(),
@@ -217,7 +217,7 @@ class WorkflowService:
 
     async def persist_workflow(self, workflow_id: str) -> bool:
         """将当前 workflow 全量同步到三张表（逐表写入）；未配置持久化时返回 False"""
-        if not self._db or not self.config.persist_enabled:
+        if self._db is None or not self.config.persist_enabled:
             return False
         lock = await self._lock_for(workflow_id)
         async with lock:
@@ -278,7 +278,7 @@ class WorkflowService:
                         break
             # 插入到结束节点前
             w.steps.insert(len(w.steps) - 1, step)
-            if self._db and self.config.persist_enabled:
+            if self._db is not None and self.config.persist_enabled:
                 await save_step(self._db, self._step_coll(), step)
                 await update_step(self._db, self._step_coll(), end_step)
                 if prev_id:
@@ -340,7 +340,7 @@ class WorkflowService:
                         s0.previous_step_id = step.id
                         break
             w.steps.insert(after_index + 1, step)
-            if self._db and self.config.persist_enabled:
+            if self._db is not None and self.config.persist_enabled:
                 await save_step(self._db, self._step_coll(), step)
                 await update_step(self._db, self._step_coll(), after_step)
                 if next_step_id:
@@ -374,11 +374,11 @@ class WorkflowService:
                             if s0.id == next_id:
                                 s0.previous_step_id = prev_id
                                 break
-                    if self._db and self.config.persist_enabled:
+                    if self._db is not None and self.config.persist_enabled:
                         await delete_step_cascade(
                             self._db, self._step_coll(), self._task_coll(), step_id
                         )
-                    if self._db and self.config.persist_enabled and (prev_id or next_id):
+                    if self._db is not None and self.config.persist_enabled and (prev_id or next_id):
                         for s0 in w.steps:
                             if s0.id == prev_id or s0.id == next_id:
                                 await update_step(self._db, self._step_coll(), s0)
@@ -420,7 +420,7 @@ class WorkflowService:
                 step.on_done_path = on_done_path
             if on_retry_path is not None:
                 step.on_retry_path = on_retry_path
-            if self._db and self.config.persist_enabled:
+            if self._db is not None and self.config.persist_enabled:
                 await update_step(self._db, self._step_coll(), step)
         return step
 
@@ -477,7 +477,7 @@ class WorkflowService:
                 on_retry_path=on_retry_path or "",
             )
             step.tasks.append(task)
-            if self._db and self.config.persist_enabled:
+            if self._db is not None and self.config.persist_enabled:
                 await save_task(self._db, self._task_coll(), task)
         return task
 
@@ -496,7 +496,7 @@ class WorkflowService:
             for i, t in enumerate(step.tasks):
                 if t.id == task_id:
                     step.tasks.pop(i)
-                    if self._db and self.config.persist_enabled:
+                    if self._db is not None and self.config.persist_enabled:
                         await delete_task_from_db(self._db, self._task_coll(), task_id)
                     return True
         return False
@@ -547,7 +547,7 @@ class WorkflowService:
                         t.on_done_path = on_done_path
                     if on_retry_path is not None:
                         t.on_retry_path = on_retry_path
-                    if self._db and self.config.persist_enabled:
+                    if self._db is not None and self.config.persist_enabled:
                         await update_task(self._db, self._task_coll(), t)
                     return t
         return None
@@ -658,7 +658,7 @@ class WorkflowService:
                     for tr in sr.task_results:
                         if tr.success and tr.data is not None:
                             w.task_results[tr.task_id] = tr.data
-                            if self._db and self.config.persist_enabled:
+                            if self._db is not None and self.config.persist_enabled:
                                 await save_workflow_task_result(
                                     self._db,
                                     self._task_coll(),
@@ -697,7 +697,7 @@ class WorkflowService:
                         w = self._workflows.get(workflow_id)
                         if w:
                             w.task_results[tr.task_id] = tr.data
-                            if self._db and self.config.persist_enabled:
+                            if self._db is not None and self.config.persist_enabled:
                                 await save_workflow_task_result(
                                     self._db,
                                     self._task_coll(),

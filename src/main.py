@@ -13,6 +13,7 @@ _project_root = _src_dir.parent
 load_dotenv(_project_root / ".env")
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from packages.log import (
     create_default_log_service,
@@ -33,7 +34,7 @@ async def lifespan(app: FastAPI):
     # ===== 启动时执行 =====
     # log 服务初始化
     log_service = create_default_log_service()
-    results = log_service.init(force=True)
+    results = log_service.init(force=False)
     print(f"LOG服务初始化结果: {results}")
 
     # MongoDB 连接
@@ -62,6 +63,15 @@ app = FastAPI(
     description="AI 后端服务 API",
     version="1.0.0",
     lifespan=lifespan
+)
+
+# 允许跨域请求
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # 注册 API 路由
