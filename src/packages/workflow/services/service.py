@@ -79,6 +79,7 @@ class WorkflowService:
     - 支持可选的数据库持久化（需 config.persist_enabled 并注入 db）
     - 当已配置 db 且 persist_enabled 时，create/add/edit/delete 等操作完成后会自动同步到数据库
     - Web 后端场景：_workflows 为缓存，get_workflow/run_workflow 等若内存未命中则从 DB 按需加载，便于跨请求、多实例、重启后仍可操作
+    - 并发安全：同一 workflow_id 的 run/结构修改 通过 per-workflow 锁串行化，避免多请求共享内存导致的状态错乱
     """
 
     def __init__(
@@ -90,6 +91,20 @@ class WorkflowService:
         self._db = db
         # 内存缓存；未命中时若已开启持久化则从 DB 按需加载（见 _ensure_workflow）
         self._workflows: Dict[str, Workflow] = {}
+        # 按 workflow_id 的锁，保证同一 workflow 的 run 与结构修改串行
+        self._locks: Dict[str, asyncio.Lock] = {}
+        self._meta_lock = asyncio.Lock()
+
+    async def _lock_for(self, workflow_id: str) -> asyncio.Lock:
+        """获取指定 workflow 的独占锁（用于 run / 结构修改）"""
+        async with self._meta_lock:
+            if workflow_id not in self._locks:
+                self._locks[workflow_id] = asyncio.Lock()
+            return self._locks[workflow_id]
+
+    def _unregister_lock(self, workflow_id: str) -> None:
+        """删除 workflow 后释放其锁引用（在已持有 _meta_lock 时调用）"""
+        self._locks.pop(workflow_id, None)
 
     def _wf_coll(self) -> str:
         return self.config.workflow_collection_name
@@ -171,40 +186,49 @@ class WorkflowService:
 
     async def delete_workflow(self, workflow_id: str) -> bool:
         """删除 workflow，并级联删除 step 表、task 表中关联行；若仅存在于 DB 也会执行级联删除"""
-        if workflow_id in self._workflows:
+        lock = await self._lock_for(workflow_id)
+        async with lock:
+            if workflow_id in self._workflows:
+                if self._db and self.config.persist_enabled:
+                    await delete_workflow_cascade(
+                        self._db,
+                        self._wf_coll(),
+                        self._step_coll(),
+                        self._task_coll(),
+                        workflow_id,
+                    )
+                del self._workflows[workflow_id]
+                async with self._meta_lock:
+                    self._unregister_lock(workflow_id)
+                return True
             if self._db and self.config.persist_enabled:
-                await delete_workflow_cascade(
+                ok = await delete_workflow_cascade(
                     self._db,
                     self._wf_coll(),
                     self._step_coll(),
                     self._task_coll(),
                     workflow_id,
                 )
-            del self._workflows[workflow_id]
-            return True
-        if self._db and self.config.persist_enabled:
-            ok = await delete_workflow_cascade(
-                self._db,
-                self._wf_coll(),
-                self._step_coll(),
-                self._task_coll(),
-                workflow_id,
-            )
-            return ok
+                if ok:
+                    async with self._meta_lock:
+                        self._unregister_lock(workflow_id)
+                return ok
         return False
 
     async def persist_workflow(self, workflow_id: str) -> bool:
         """将当前 workflow 全量同步到三张表（逐表写入）；未配置持久化时返回 False"""
         if not self._db or not self.config.persist_enabled:
             return False
-        w = await self._ensure_workflow(workflow_id)
-        if not w:
-            return False
-        await save_workflow_meta(self._db, self._wf_coll(), w)
-        for s in w.steps:
-            await save_step(self._db, self._step_coll(), s)
-            for t in s.tasks:
-                await save_task(self._db, self._task_coll(), t)
+        lock = await self._lock_for(workflow_id)
+        async with lock:
+            w = await self._ensure_workflow(workflow_id)
+            if not w:
+                return False
+            await save_workflow_meta(self._db, self._wf_coll(), w)
+            for s in w.steps:
+                await save_step(self._db, self._step_coll(), s)
+                for t in s.tasks:
+                    await save_task(self._db, self._task_coll(), t)
         return True
 
     # ---------- Step 操作 ----------
@@ -221,45 +245,47 @@ class WorkflowService:
         on_retry_path: str = "",
     ) -> Optional[Step]:
         """在 workflow 中结束节点前添加过程 step（链：… -> 新step -> 结束）"""
-        w = await self._ensure_workflow(workflow_id)
-        if not w or not w.end_step_id:
-            return None
-        end_step = self._get_step(workflow_id, w.end_step_id)
-        if not end_step:
-            return None
-        # 结束节点前一个 step（可能是起始或某个过程 step）
-        prev_id = end_step.previous_step_id or ""
-        now = datetime.utcnow()
-        step = Step(
-            name=name,
-            description=description or "",
-            type=STEP_TYPE_PROCESS,
-            parent_workflow_id=workflow_id,
-            previous_step_id=prev_id,
-            next_step_id=end_step.id,
-            creator=creator or "",
-            created_at=now,
-            on_before_path=on_before_path or "",
-            on_start_path=on_start_path or "",
-            on_done_path=on_done_path or "",
-            on_retry_path=on_retry_path or "",
-        )
-        end_step.previous_step_id = step.id
-        if prev_id:
-            for s in w.steps:
-                if s.id == prev_id:
-                    s.next_step_id = step.id
-                    break
-        # 插入到结束节点前
-        w.steps.insert(len(w.steps) - 1, step)
-        if self._db and self.config.persist_enabled:
-            await save_step(self._db, self._step_coll(), step)
-            await update_step(self._db, self._step_coll(), end_step)
+        lock = await self._lock_for(workflow_id)
+        async with lock:
+            w = await self._ensure_workflow(workflow_id)
+            if not w or not w.end_step_id:
+                return None
+            end_step = self._get_step(workflow_id, w.end_step_id)
+            if not end_step:
+                return None
+            # 结束节点前一个 step（可能是起始或某个过程 step）
+            prev_id = end_step.previous_step_id or ""
+            now = datetime.utcnow()
+            step = Step(
+                name=name,
+                description=description or "",
+                type=STEP_TYPE_PROCESS,
+                parent_workflow_id=workflow_id,
+                previous_step_id=prev_id,
+                next_step_id=end_step.id,
+                creator=creator or "",
+                created_at=now,
+                on_before_path=on_before_path or "",
+                on_start_path=on_start_path or "",
+                on_done_path=on_done_path or "",
+                on_retry_path=on_retry_path or "",
+            )
+            end_step.previous_step_id = step.id
             if prev_id:
                 for s in w.steps:
                     if s.id == prev_id:
-                        await update_step(self._db, self._step_coll(), s)
+                        s.next_step_id = step.id
                         break
+            # 插入到结束节点前
+            w.steps.insert(len(w.steps) - 1, step)
+            if self._db and self.config.persist_enabled:
+                await save_step(self._db, self._step_coll(), step)
+                await update_step(self._db, self._step_coll(), end_step)
+                if prev_id:
+                    for s in w.steps:
+                        if s.id == prev_id:
+                            await update_step(self._db, self._step_coll(), s)
+                            break
         return step
 
     async def add_step_after(
@@ -275,84 +301,88 @@ class WorkflowService:
         on_retry_path: str = "",
     ) -> Optional[Step]:
         """在指定 step 后方插入新的过程 step；不可在结束节点后插入"""
-        w = await self._ensure_workflow(workflow_id)
-        if not w:
-            return None
-        if after_step_id == w.end_step_id:
-            return None  # 结束节点后不可插入
-        after_index = -1
-        after_step = None
-        for i, s in enumerate(w.steps):
-            if s.id == after_step_id:
-                after_index = i
-                after_step = s
-                break
-        if after_index < 0 or after_step is None:
-            return None
-        now = datetime.utcnow()
-        next_step_id = after_step.next_step_id or ""
-        step = Step(
-            name=name,
-            description=description or "",
-            type=STEP_TYPE_PROCESS,
-            parent_workflow_id=workflow_id,
-            previous_step_id=after_step_id,
-            next_step_id=next_step_id,
-            creator=creator or "",
-            created_at=now,
-            on_before_path=on_before_path or "",
-            on_start_path=on_start_path or "",
-            on_done_path=on_done_path or "",
-            on_retry_path=on_retry_path or "",
-        )
-        after_step.next_step_id = step.id
-        if next_step_id:
-            for s0 in w.steps:
-                if s0.id == next_step_id:
-                    s0.previous_step_id = step.id
+        lock = await self._lock_for(workflow_id)
+        async with lock:
+            w = await self._ensure_workflow(workflow_id)
+            if not w:
+                return None
+            if after_step_id == w.end_step_id:
+                return None  # 结束节点后不可插入
+            after_index = -1
+            after_step = None
+            for i, s in enumerate(w.steps):
+                if s.id == after_step_id:
+                    after_index = i
+                    after_step = s
                     break
-        w.steps.insert(after_index + 1, step)
-        if self._db and self.config.persist_enabled:
-            await save_step(self._db, self._step_coll(), step)
-            await update_step(self._db, self._step_coll(), after_step)
+            if after_index < 0 or after_step is None:
+                return None
+            now = datetime.utcnow()
+            next_step_id = after_step.next_step_id or ""
+            step = Step(
+                name=name,
+                description=description or "",
+                type=STEP_TYPE_PROCESS,
+                parent_workflow_id=workflow_id,
+                previous_step_id=after_step_id,
+                next_step_id=next_step_id,
+                creator=creator or "",
+                created_at=now,
+                on_before_path=on_before_path or "",
+                on_start_path=on_start_path or "",
+                on_done_path=on_done_path or "",
+                on_retry_path=on_retry_path or "",
+            )
+            after_step.next_step_id = step.id
             if next_step_id:
                 for s0 in w.steps:
                     if s0.id == next_step_id:
-                        await update_step(self._db, self._step_coll(), s0)
+                        s0.previous_step_id = step.id
                         break
+            w.steps.insert(after_index + 1, step)
+            if self._db and self.config.persist_enabled:
+                await save_step(self._db, self._step_coll(), step)
+                await update_step(self._db, self._step_coll(), after_step)
+                if next_step_id:
+                    for s0 in w.steps:
+                        if s0.id == next_step_id:
+                            await update_step(self._db, self._step_coll(), s0)
+                            break
         return step
 
     async def delete_step(self, workflow_id: str, step_id: str) -> bool:
         """删除指定 step；起始节点与结束节点不可删除"""
-        w = await self._ensure_workflow(workflow_id)
-        if not w:
-            return False
-        if step_id == w.first_step_id or step_id == w.end_step_id:
-            return False
-        for i, s in enumerate(w.steps):
-            if s.id == step_id:
-                prev_id = s.previous_step_id
-                next_id = s.next_step_id
-                w.steps.pop(i)
-                if prev_id:
-                    for s0 in w.steps:
-                        if s0.id == prev_id:
-                            s0.next_step_id = next_id
-                            break
-                if next_id:
-                    for s0 in w.steps:
-                        if s0.id == next_id:
-                            s0.previous_step_id = prev_id
-                            break
-                if self._db and self.config.persist_enabled:
-                    await delete_step_cascade(
-                        self._db, self._step_coll(), self._task_coll(), step_id
-                    )
-                if self._db and self.config.persist_enabled and (prev_id or next_id):
-                    for s0 in w.steps:
-                        if s0.id == prev_id or s0.id == next_id:
-                            await update_step(self._db, self._step_coll(), s0)
-                return True
+        lock = await self._lock_for(workflow_id)
+        async with lock:
+            w = await self._ensure_workflow(workflow_id)
+            if not w:
+                return False
+            if step_id == w.first_step_id or step_id == w.end_step_id:
+                return False
+            for i, s in enumerate(w.steps):
+                if s.id == step_id:
+                    prev_id = s.previous_step_id
+                    next_id = s.next_step_id
+                    w.steps.pop(i)
+                    if prev_id:
+                        for s0 in w.steps:
+                            if s0.id == prev_id:
+                                s0.next_step_id = next_id
+                                break
+                    if next_id:
+                        for s0 in w.steps:
+                            if s0.id == next_id:
+                                s0.previous_step_id = prev_id
+                                break
+                    if self._db and self.config.persist_enabled:
+                        await delete_step_cascade(
+                            self._db, self._step_coll(), self._task_coll(), step_id
+                        )
+                    if self._db and self.config.persist_enabled and (prev_id or next_id):
+                        for s0 in w.steps:
+                            if s0.id == prev_id or s0.id == next_id:
+                                await update_step(self._db, self._step_coll(), s0)
+                    return True
         return False
 
     async def edit_step(
@@ -368,28 +398,30 @@ class WorkflowService:
         on_retry_path: Optional[str] = None,
     ) -> Optional[Step]:
         """编辑 step（名称、描述、创建者与回调路径）"""
-        w = await self._ensure_workflow(workflow_id)
-        if not w:
-            return None
-        step = self._get_step(workflow_id, step_id)
-        if not step:
-            return None
-        if name is not None:
-            step.name = name
-        if description is not None:
-            step.description = description
-        if creator is not None:
-            step.creator = creator
-        if on_before_path is not None:
-            step.on_before_path = on_before_path
-        if on_start_path is not None:
-            step.on_start_path = on_start_path
-        if on_done_path is not None:
-            step.on_done_path = on_done_path
-        if on_retry_path is not None:
-            step.on_retry_path = on_retry_path
-        if self._db and self.config.persist_enabled:
-            await update_step(self._db, self._step_coll(), step)
+        lock = await self._lock_for(workflow_id)
+        async with lock:
+            w = await self._ensure_workflow(workflow_id)
+            if not w:
+                return None
+            step = self._get_step(workflow_id, step_id)
+            if not step:
+                return None
+            if name is not None:
+                step.name = name
+            if description is not None:
+                step.description = description
+            if creator is not None:
+                step.creator = creator
+            if on_before_path is not None:
+                step.on_before_path = on_before_path
+            if on_start_path is not None:
+                step.on_start_path = on_start_path
+            if on_done_path is not None:
+                step.on_done_path = on_done_path
+            if on_retry_path is not None:
+                step.on_retry_path = on_retry_path
+            if self._db and self.config.persist_enabled:
+                await update_step(self._db, self._step_coll(), step)
         return step
 
     def _get_step(self, workflow_id: str, step_id: str) -> Optional[Step]:
@@ -418,51 +450,55 @@ class WorkflowService:
         on_retry_path: str = "",
     ) -> Optional[Task]:
         """在 step 内添加 task；起始节点与结束节点不可添加 task"""
-        w = await self._ensure_workflow(workflow_id)
-        if not w:
-            return None
-        step = self._get_step(workflow_id, step_id)
-        if not step:
-            return None
-        if step.type in (STEP_TYPE_START, STEP_TYPE_END):
-            return None
-        now = datetime.utcnow()
-        task = Task(
-            name=name,
-            description=description or "",
-            parent_step_id=step_id,
-            parent_workflow_id=workflow_id,
-            creator=creator or "",
-            created_at=now,
-            run_status=TASK_RUN_STATUS_PENDING,
-            handler_path=handler_path or "",
-            params=params,
-            on_before_path=on_before_path or "",
-            on_start_path=on_start_path or "",
-            on_done_path=on_done_path or "",
-            on_retry_path=on_retry_path or "",
-        )
-        step.tasks.append(task)
-        if self._db and self.config.persist_enabled:
-            await save_task(self._db, self._task_coll(), task)
+        lock = await self._lock_for(workflow_id)
+        async with lock:
+            w = await self._ensure_workflow(workflow_id)
+            if not w:
+                return None
+            step = self._get_step(workflow_id, step_id)
+            if not step:
+                return None
+            if step.type in (STEP_TYPE_START, STEP_TYPE_END):
+                return None
+            now = datetime.utcnow()
+            task = Task(
+                name=name,
+                description=description or "",
+                parent_step_id=step_id,
+                parent_workflow_id=workflow_id,
+                creator=creator or "",
+                created_at=now,
+                run_status=TASK_RUN_STATUS_PENDING,
+                handler_path=handler_path or "",
+                params=params,
+                on_before_path=on_before_path or "",
+                on_start_path=on_start_path or "",
+                on_done_path=on_done_path or "",
+                on_retry_path=on_retry_path or "",
+            )
+            step.tasks.append(task)
+            if self._db and self.config.persist_enabled:
+                await save_task(self._db, self._task_coll(), task)
         return task
 
     async def delete_task(self, workflow_id: str, step_id: str, task_id: str) -> bool:
         """删除 step 内指定 task；起始/结束节点上不允许删除（无 task 或防御性校验）"""
-        w = await self._ensure_workflow(workflow_id)
-        if not w:
-            return False
-        step = self._get_step(workflow_id, step_id)
-        if not step:
-            return False
-        if step.type in (STEP_TYPE_START, STEP_TYPE_END):
-            return False
-        for i, t in enumerate(step.tasks):
-            if t.id == task_id:
-                step.tasks.pop(i)
-                if self._db and self.config.persist_enabled:
-                    await delete_task_from_db(self._db, self._task_coll(), task_id)
-                return True
+        lock = await self._lock_for(workflow_id)
+        async with lock:
+            w = await self._ensure_workflow(workflow_id)
+            if not w:
+                return False
+            step = self._get_step(workflow_id, step_id)
+            if not step:
+                return False
+            if step.type in (STEP_TYPE_START, STEP_TYPE_END):
+                return False
+            for i, t in enumerate(step.tasks):
+                if t.id == task_id:
+                    step.tasks.pop(i)
+                    if self._db and self.config.persist_enabled:
+                        await delete_task_from_db(self._db, self._task_coll(), task_id)
+                    return True
         return False
 
     async def edit_task(
@@ -481,37 +517,39 @@ class WorkflowService:
         on_retry_path: Optional[str] = None,
     ) -> Optional[Task]:
         """编辑 task（名称、描述、创建者、handler 路径、参数与回调路径）；起始/结束节点上无 task，直接返回 None"""
-        w = await self._ensure_workflow(workflow_id)
-        if not w:
-            return None
-        step = self._get_step(workflow_id, step_id)
-        if not step:
-            return None
-        if step.type in (STEP_TYPE_START, STEP_TYPE_END):
-            return None
-        for t in step.tasks:
-            if t.id == task_id:
-                if name is not None:
-                    t.name = name
-                if description is not None:
-                    t.description = description
-                if creator is not None:
-                    t.creator = creator
-                if handler_path is not None:
-                    t.handler_path = handler_path
-                if params is not None:
-                    t.params = params
-                if on_before_path is not None:
-                    t.on_before_path = on_before_path
-                if on_start_path is not None:
-                    t.on_start_path = on_start_path
-                if on_done_path is not None:
-                    t.on_done_path = on_done_path
-                if on_retry_path is not None:
-                    t.on_retry_path = on_retry_path
-                if self._db and self.config.persist_enabled:
-                    await update_task(self._db, self._task_coll(), t)
-                return t
+        lock = await self._lock_for(workflow_id)
+        async with lock:
+            w = await self._ensure_workflow(workflow_id)
+            if not w:
+                return None
+            step = self._get_step(workflow_id, step_id)
+            if not step:
+                return None
+            if step.type in (STEP_TYPE_START, STEP_TYPE_END):
+                return None
+            for t in step.tasks:
+                if t.id == task_id:
+                    if name is not None:
+                        t.name = name
+                    if description is not None:
+                        t.description = description
+                    if creator is not None:
+                        t.creator = creator
+                    if handler_path is not None:
+                        t.handler_path = handler_path
+                    if params is not None:
+                        t.params = params
+                    if on_before_path is not None:
+                        t.on_before_path = on_before_path
+                    if on_start_path is not None:
+                        t.on_start_path = on_start_path
+                    if on_done_path is not None:
+                        t.on_done_path = on_done_path
+                    if on_retry_path is not None:
+                        t.on_retry_path = on_retry_path
+                    if self._db and self.config.persist_enabled:
+                        await update_task(self._db, self._task_coll(), t)
+                    return t
         return None
 
     # ---------- 执行：Task（执行时解析路径为函数） ----------
@@ -586,16 +624,18 @@ class WorkflowService:
         self, workflow_id: str, step_id: str, context: Optional[Dict[str, Any]] = None
     ) -> Optional[StepResult]:
         """重执行指定 step（先触发 step.on_retry_path 对应回调）"""
-        w = await self._ensure_workflow(workflow_id)
-        if not w:
-            return None
-        step = self._get_step(workflow_id, step_id)
-        if not step:
-            return None
-        ctx = context or {}
-        on_retry = _resolve_path(step.on_retry_path)
-        await _invoke_callback_async(on_retry, step, ctx)
-        return await self._run_step(step, ctx)
+        lock = await self._lock_for(workflow_id)
+        async with lock:
+            w = await self._ensure_workflow(workflow_id)
+            if not w:
+                return None
+            step = self._get_step(workflow_id, step_id)
+            if not step:
+                return None
+            ctx = context or {}
+            on_retry = _resolve_path(step.on_retry_path)
+            await _invoke_callback_async(on_retry, step, ctx)
+            return await self._run_step(step, ctx)
 
     # ---------- 执行：Workflow ----------
 
@@ -603,33 +643,35 @@ class WorkflowService:
         self, workflow_id: str, context: Optional[Dict[str, Any]] = None
     ) -> Optional[WorkflowResult]:
         """按链顺序串行执行所有 step，每个 step 内 task 并行执行；成功完成的 task 结果会写入内存并可选持久化到 DB"""
-        w = await self._ensure_workflow(workflow_id)
-        if not w:
-            return None
-        ctx = context or {}
-        wr = WorkflowResult(workflow_id=w.id)
-        try:
-            for step in w.steps:
-                sr = await self._run_step(step, ctx)
-                wr.step_results.append(sr)
-                # 将执行成功且带结果的 task 写入 workflow.task_results 并可选落库
-                for tr in sr.task_results:
-                    if tr.success and tr.data is not None:
-                        w.task_results[tr.task_id] = tr.data
-                        if self._db and self.config.persist_enabled:
-                            await save_workflow_task_result(
-                                self._db,
-                                self._task_coll(),
-                                tr.task_id,
-                                TASK_RUN_STATUS_SUCCESS,
-                                tr.data,
-                            )
-                if not sr.success:
-                    wr.error = sr.error or "step failed"
-                    break
-            wr.success = not wr.error and all(sr.success for sr in wr.step_results)
-        except Exception as e:
-            wr.error = str(e)
+        lock = await self._lock_for(workflow_id)
+        async with lock:
+            w = await self._ensure_workflow(workflow_id)
+            if not w:
+                return None
+            ctx = context or {}
+            wr = WorkflowResult(workflow_id=w.id)
+            try:
+                for step in w.steps:
+                    sr = await self._run_step(step, ctx)
+                    wr.step_results.append(sr)
+                    # 将执行成功且带结果的 task 写入 workflow.task_results 并可选落库
+                    for tr in sr.task_results:
+                        if tr.success and tr.data is not None:
+                            w.task_results[tr.task_id] = tr.data
+                            if self._db and self.config.persist_enabled:
+                                await save_workflow_task_result(
+                                    self._db,
+                                    self._task_coll(),
+                                    tr.task_id,
+                                    TASK_RUN_STATUS_SUCCESS,
+                                    tr.data,
+                                )
+                    if not sr.success:
+                        wr.error = sr.error or "step failed"
+                        break
+                wr.success = not wr.error and all(sr.success for sr in wr.step_results)
+            except Exception as e:
+                wr.error = str(e)
         return wr
 
     async def re_run_task(
@@ -640,28 +682,30 @@ class WorkflowService:
         context: Optional[Dict[str, Any]] = None,
     ) -> Optional[TaskResult]:
         """重执行指定 task（先触发 on_retry_path 对应回调）；成功则更新并可选持久化该 task 结果"""
-        w = await self._ensure_workflow(workflow_id)
-        if not w:
-            return None
-        step = self._get_step(workflow_id, step_id)
-        if not step:
-            return None
-        for t in step.tasks:
-            if t.id == task_id:
-                tr = await self._run_task_retry(t, context or {})
-                if tr.success and tr.data is not None:
-                    w = self._workflows.get(workflow_id)
-                    if w:
-                        w.task_results[tr.task_id] = tr.data
-                        if self._db and self.config.persist_enabled:
-                            await save_workflow_task_result(
-                                self._db,
-                                self._task_coll(),
-                                tr.task_id,
-                                TASK_RUN_STATUS_SUCCESS,
-                                tr.data,
-                            )
-                return tr
+        lock = await self._lock_for(workflow_id)
+        async with lock:
+            w = await self._ensure_workflow(workflow_id)
+            if not w:
+                return None
+            step = self._get_step(workflow_id, step_id)
+            if not step:
+                return None
+            for t in step.tasks:
+                if t.id == task_id:
+                    tr = await self._run_task_retry(t, context or {})
+                    if tr.success and tr.data is not None:
+                        w = self._workflows.get(workflow_id)
+                        if w:
+                            w.task_results[tr.task_id] = tr.data
+                            if self._db and self.config.persist_enabled:
+                                await save_workflow_task_result(
+                                    self._db,
+                                    self._task_coll(),
+                                    tr.task_id,
+                                    TASK_RUN_STATUS_SUCCESS,
+                                    tr.data,
+                                )
+                    return tr
         return None
 
 

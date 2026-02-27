@@ -15,6 +15,8 @@ from packages.log import (
 from api.v1.router import api_router
 from core.mongodb import connect_mongodb, close_mongodb
 from core.config import MongoDBConfig
+from packages.workflow import create_workflow_service
+from packages.workflow.configs import WorkflowConfig
 
 
 @asynccontextmanager
@@ -33,6 +35,15 @@ async def lifespan(app: FastAPI):
     config = MongoDBConfig.from_env()
     await connect_mongodb(config)
     print(f"MongoDB 已连接，数据库: {config.db_name}")
+
+    # Workflow 服务（注入 db，便于按需从 DB 加载）
+    from core.mongodb import get_database
+    workflow_config = WorkflowConfig.from_env()
+    app.state.workflow_service = create_workflow_service(
+        config=workflow_config,
+        db=get_database(),
+    )
+    print(f"Workflow 服务已初始化，持久化: {workflow_config.persist_enabled}")
 
     yield
 

@@ -56,6 +56,18 @@ from .repositories import (
     workflow_to_doc,
     doc_to_workflow,
 )
+from .api import (
+    router as workflow_router,
+    get_workflow_service,
+    WorkflowCreate,
+    WorkflowResponse,
+    StepCreate,
+    StepResponse,
+    TaskCreate,
+    TaskResponse,
+    RunWorkflowRequest,
+    WorkflowRunResponse,
+)
 
 __all__ = [
     "WorkflowConfig",
@@ -90,6 +102,17 @@ __all__ = [
     "save_workflow_task_result",
     "workflow_to_doc",
     "doc_to_workflow",
+    # HTTP API
+    "workflow_router",
+    "get_workflow_service",
+    "WorkflowCreate",
+    "WorkflowResponse",
+    "StepCreate",
+    "StepResponse",
+    "TaskCreate",
+    "TaskResponse",
+    "RunWorkflowRequest",
+    "WorkflowRunResponse",
 ]
 
 __version__ = "1.0.0"
