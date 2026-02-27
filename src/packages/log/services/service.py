@@ -330,5 +330,5 @@ def create_default_log_service(
         配置好的 LogService 实例
     """
     service = LogService(service_config)
-    service.register_provider(OpenSearchProvider(opensearch_config))
+    service.register_provider(OpenSearchProvider(opensearch_config or OpenSearchConfig.from_env()))
     return service

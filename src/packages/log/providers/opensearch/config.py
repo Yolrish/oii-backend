@@ -31,7 +31,16 @@ class OpenSearchConfig:
     
     @classmethod
     def from_env(cls) -> "OpenSearchConfig":
-        """从环境变量加载配置"""
+        """从环境变量加载配置：优先从项目根 .env 加载，其次从 log 包根目录 .env 加载"""
+        from dotenv import load_dotenv
+        from pathlib import Path
+        _file = Path(__file__).resolve()
+        # 项目根：src 的上一级
+        _project_root = _file.parent.parent.parent.parent.parent.parent
+        # log 包根目录：packages/log/
+        _log_root = _file.parent.parent.parent
+        load_dotenv(_project_root / ".env")
+        load_dotenv(_log_root / ".env")  # 次优先，不覆盖已有变量
         return cls(
             host=os.getenv("OPENSEARCH_HOST", cls.host),
             username=os.getenv("OPENSEARCH_USERNAME", cls.username),
