@@ -60,11 +60,16 @@ from .api import (
     WorkflowCreate,
     WorkflowResponse,
     StepCreate,
+    StepUpdate,
     StepResponse,
+    StepResultSchema,
     TaskCreate,
+    TaskUpdate,
     TaskResponse,
+    TaskResultContentSchema,
     RunWorkflowRequest,
     WorkflowRunResponse,
+    TaskResultSchema,
 )
 
 __all__ = [
@@ -110,11 +115,16 @@ __all__ = [
     "WorkflowCreate",
     "WorkflowResponse",
     "StepCreate",
+    "StepUpdate",
     "StepResponse",
+    "StepResultSchema",
     "TaskCreate",
+    "TaskUpdate",
     "TaskResponse",
+    "TaskResultContentSchema",
     "RunWorkflowRequest",
     "WorkflowRunResponse",
+    "TaskResultSchema",
 ]
 
 __version__ = "1.0.0"

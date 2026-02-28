@@ -15,22 +15,33 @@ from .controller import (
     add_step as ctrl_add_step,
     add_step_after as ctrl_add_step_after,
     delete_step as ctrl_delete_step,
+    edit_step as ctrl_edit_step,
+    re_run_step as ctrl_re_run_step,
     add_task as ctrl_add_task,
     delete_task as ctrl_delete_task,
+    edit_task as ctrl_edit_task,
+    re_run_task as ctrl_re_run_task,
     run_workflow as ctrl_run_workflow,
+    persist_workflow as ctrl_persist_workflow,
     workflow_to_response,
     step_to_response,
     task_to_response,
     workflow_run_to_response,
+    step_result_to_schema,
+    task_result_to_schema,
 )
 from .deps import get_workflow_service
 from .schemas import (
     WorkflowCreate,
     WorkflowResponse,
     StepCreate,
+    StepUpdate,
     StepResponse,
+    StepResultSchema,
     TaskCreate,
+    TaskUpdate,
     TaskResponse,
+    TaskResultSchema,
     RunWorkflowRequest,
     WorkflowRunResponse,
 )
@@ -155,6 +166,44 @@ async def delete_step(
     return None
 
 
+@router.patch("/{workflow_id}/steps/{step_id}", response_model=StepResponse)
+async def edit_step(
+    workflow_id: str,
+    step_id: str,
+    body: StepUpdate,
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Edit a process step (name, description, creator, callback paths)."""
+    step = await ctrl_edit_step(service, workflow_id, step_id, body)
+    if not step:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Step not found",
+        )
+    return step_to_response(step)
+
+
+@router.post(
+    "/{workflow_id}/steps/{step_id}/rerun",
+    response_model=StepResultSchema,
+)
+async def re_run_step(
+    workflow_id: str,
+    step_id: str,
+    body: RunWorkflowRequest | None = None,
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Re-run a step (triggers on_retry_path then executes the step)."""
+    context = (body and body.context) or {}
+    sr = await ctrl_re_run_step(service, workflow_id, step_id, context=context)
+    if not sr:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workflow or step not found",
+        )
+    return step_result_to_schema(sr)
+
+
 # ---------- Task ----------
 
 
@@ -199,6 +248,51 @@ async def delete_task(
     return None
 
 
+@router.patch(
+    "/{workflow_id}/steps/{step_id}/tasks/{task_id}",
+    response_model=TaskResponse,
+)
+async def edit_task(
+    workflow_id: str,
+    step_id: str,
+    task_id: str,
+    body: TaskUpdate,
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Edit a task (name, description, handler_path, params, callback paths)."""
+    task = await ctrl_edit_task(service, workflow_id, step_id, task_id, body)
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Task not found",
+        )
+    return task_to_response(task)
+
+
+@router.post(
+    "/{workflow_id}/steps/{step_id}/tasks/{task_id}/rerun",
+    response_model=TaskResultSchema,
+)
+async def re_run_task(
+    workflow_id: str,
+    step_id: str,
+    task_id: str,
+    body: RunWorkflowRequest | None = None,
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Re-run a task (triggers on_retry_path then executes the task)."""
+    context = (body and body.context) or {}
+    tr = await ctrl_re_run_task(
+        service, workflow_id, step_id, task_id, context=context
+    )
+    if not tr:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workflow, step or task not found",
+        )
+    return task_result_to_schema(tr)
+
+
 # ---------- Run ----------
 
 
@@ -216,3 +310,18 @@ async def run_workflow(
             detail="Workflow not found",
         )
     return workflow_run_to_response(wr)
+
+
+@router.post("/{workflow_id}/persist")
+async def persist_workflow(
+    workflow_id: str,
+    service: WorkflowService = Depends(get_workflow_service),
+):
+    """Persist workflow to DB (all three tables). Returns 200 with success flag."""
+    ok = await ctrl_persist_workflow(service, workflow_id)
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Workflow not found or persistence not enabled",
+        )
+    return {"ok": True}

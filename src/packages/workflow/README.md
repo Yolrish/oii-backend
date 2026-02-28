@@ -106,10 +106,13 @@ workflow/
 
 | 阶段     | 操作 | 说明 |
 |----------|------|------|
-| 创建     | `create_workflow` | 生成 Workflow + 起始/结束两个 Step，链为 Start → End |
+| 创建     | `create_workflow` / `register_workflow_from_ai` | 空流程或从 AI 格式解析并注册 |
 | 编排     | `add_step` / `add_step_after` | 在结束前或指定 Step 后插入 process Step |
-| 编排     | `add_task` | 仅在 process Step 上添加 Task（handler_path、params 为字符串） |
+| 编排     | `edit_step` / `delete_step` | 编辑或删除 process Step |
+| 编排     | `add_task` / `edit_task` / `delete_task` | 在 process Step 上增删改 Task |
 | 执行     | `run_workflow` | 按链串行执行 Step，Step 内 Task 并行；结果写入 task_results 并可选落库 |
+| 重跑     | `re_run_step` / `re_run_task` | 重跑指定 Step 或 Task（先触发 on_retry_path） |
+| 持久化   | `persist_workflow` | 将 workflow 全量同步到三张表 |
 | 加载     | `load_workflow_from_db` | 从三表组装 Workflow，再注册到服务后执行 |
 
 ## Workflow 整体流程逻辑梳理
@@ -222,14 +225,34 @@ async def main():
 
 ## API 摘要
 
-- **Workflow**：`create_workflow(name, creator=..., description=...)`、`get_workflow(id)`（async，未命中缓存且开启持久化时从 DB 加载）、`delete_workflow(id)`
-- **Step**：`add_step`（在结束节点前追加过程 step）、`add_step_after`（在指定 step 后插入过程 step，不可在结束节点后插入）、`delete_step`（起始/结束节点不可删）、`edit_step`、`re_run_step`
+### 服务层（WorkflowService）
 
-**说明**：当已注入 `db` 且 `persist_enabled=True` 时，**create_workflow / add_step / add_step_after / add_task / edit_step / edit_task / delete_step / delete_task / delete_workflow** 在操作完成后会**自动同步到数据库**。上述方法均为 **async**，调用时需 **await**。
-- **Task**：`add_task(workflow_id, step_id, name, description=..., creator=..., handler_path, params=..., ...)`、`delete_task`、`edit_task`、`re_run_task`
+- **Workflow**：`create_workflow`、`register_workflow_from_ai`、`get_workflow`、`delete_workflow`、`persist_workflow`
+- **Step**：`add_step`、`add_step_after`、`edit_step`、`delete_step`、`re_run_step`
+- **Task**：`add_task`、`edit_task`、`delete_task`、`re_run_task`
 - **执行**：`run_workflow(workflow_id, context)`、`re_run_step`、`re_run_task`
 
-执行函数的签名为 `(context: dict, **params) -> Any`，支持 sync/async。由 `resolve_handler(handler_path)` 解析得到。
+当已注入 `db` 且 `persist_enabled=True` 时，create/add/edit/delete 在操作完成后会**自动同步到数据库**。上述方法均为 **async**，调用时需 **await**。Task 执行函数签名为 `(context: dict, **params) -> Any`，由 `resolve_handler(handler_path)` 解析得到。
+
+### HTTP 接口（Router，前缀 `/api/v1/workflows`）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/from-ai` | 从 AI 格式 JSON 创建并注册 Workflow |
+| POST | `` | 创建空 Workflow（含 Start/End） |
+| GET | `/{workflow_id}` | 获取 Workflow |
+| DELETE | `/{workflow_id}` | 删除 Workflow |
+| POST | `/{workflow_id}/steps` | 在结束节点前添加 Step |
+| POST | `/{workflow_id}/steps/after/{after_step_id}` | 在指定 Step 后添加 Step |
+| PATCH | `/{workflow_id}/steps/{step_id}` | 编辑 Step |
+| DELETE | `/{workflow_id}/steps/{step_id}` | 删除 Step |
+| POST | `/{workflow_id}/steps/{step_id}/rerun` | 重跑 Step |
+| POST | `/{workflow_id}/steps/{step_id}/tasks` | 添加 Task |
+| PATCH | `/{workflow_id}/steps/{step_id}/tasks/{task_id}` | 编辑 Task |
+| DELETE | `/{workflow_id}/steps/{step_id}/tasks/{task_id}` | 删除 Task |
+| POST | `/{workflow_id}/steps/{step_id}/tasks/{task_id}/rerun` | 重跑 Task |
+| POST | `/{workflow_id}/run` | 执行 Workflow |
+| POST | `/{workflow_id}/persist` | 全量持久化到三张表 |
 
 ## 配置
 

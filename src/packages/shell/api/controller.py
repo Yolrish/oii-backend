@@ -52,15 +52,17 @@ def run_command_task(
     command: str = "",
     cwd: Optional[str] = None,
     timeout: Optional[int] = None,
+    service: Optional[ShellService] = None,
     **kwargs: Any,
 ) -> Dict[str, str]:
     """
-    Workflow Task 用：签名为 (context, **params)，内部使用默认 Service 调用 run_command。
+    Workflow Task 用：签名为 (context, **params)，内部调用 run_command。
     handler_path 可设为 "packages.shell.api.controller.run_command_task"。
+    未传入 service 时使用 get_default_service()，传入则使用指定实例（便于测试或自定义）。
     """
-    service = get_default_service()
+    svc = service if service is not None else get_default_service()
     return run_command(
-        service,
+        svc,
         command=command,
         cwd=cwd,
         timeout=timeout,

@@ -32,6 +32,19 @@ class TaskCreate(BaseModel):
     on_retry_path: str = ""
 
 
+class TaskUpdate(BaseModel):
+    """更新 Task 请求（全部可选）"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    creator: Optional[str] = None
+    handler_path: Optional[str] = None
+    params: Optional[Dict[str, Any]] = None
+    on_before_path: Optional[str] = None
+    on_start_path: Optional[str] = None
+    on_done_path: Optional[str] = None
+    on_retry_path: Optional[str] = None
+
+
 class TaskResponse(BaseModel):
     """Task 响应"""
     model_config = ConfigDict(from_attributes=True)
@@ -65,6 +78,17 @@ class StepCreate(BaseModel):
     on_start_path: str = ""
     on_done_path: str = ""
     on_retry_path: str = ""
+
+
+class StepUpdate(BaseModel):
+    """更新 Step 请求（全部可选）"""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    creator: Optional[str] = None
+    on_before_path: Optional[str] = None
+    on_start_path: Optional[str] = None
+    on_done_path: Optional[str] = None
+    on_retry_path: Optional[str] = None
 
 
 class StepResponse(BaseModel):

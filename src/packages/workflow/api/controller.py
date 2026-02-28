@@ -12,14 +12,18 @@ from ..models import (
     Task,
     TaskResultContent,
     WorkflowResult,
+    StepResult,
+    TaskResult,
 )
 from ..services import WorkflowService
 from .schemas import (
     WorkflowCreate,
     WorkflowResponse,
     StepCreate,
+    StepUpdate,
     StepResponse,
     TaskCreate,
+    TaskUpdate,
     TaskResponse,
     TaskResultContentSchema,
     RunWorkflowRequest,
@@ -96,24 +100,28 @@ def workflow_to_response(w: Workflow) -> WorkflowResponse:
     )
 
 
+def task_result_to_schema(tr: TaskResult) -> TaskResultSchema:
+    """单条 Task 执行结果 → Schema"""
+    return TaskResultSchema(
+        task_id=tr.task_id,
+        success=tr.success,
+        data=task_result_content_to_schema(tr.data) if tr.data else None,
+        error=tr.error,
+    )
+
+
+def step_result_to_schema(sr: StepResult) -> StepResultSchema:
+    """单条 Step 执行结果 → Schema"""
+    return StepResultSchema(
+        step_id=sr.step_id,
+        success=sr.success,
+        task_results=[task_result_to_schema(tr) for tr in sr.task_results],
+        error=sr.error,
+    )
+
+
 def workflow_run_to_response(wr: WorkflowResult) -> WorkflowRunResponse:
-    step_results = [
-        StepResultSchema(
-            step_id=sr.step_id,
-            success=sr.success,
-            task_results=[
-                TaskResultSchema(
-                    task_id=tr.task_id,
-                    success=tr.success,
-                    data=task_result_content_to_schema(tr.data) if tr.data else None,
-                    error=tr.error,
-                )
-                for tr in sr.task_results
-            ],
-            error=sr.error,
-        )
-        for sr in wr.step_results
-    ]
+    step_results = [step_result_to_schema(sr) for sr in wr.step_results]
     return WorkflowRunResponse(
         workflow_id=wr.workflow_id,
         success=wr.success,
@@ -211,6 +219,36 @@ async def delete_step(
     return await service.delete_step(workflow_id, step_id)
 
 
+async def edit_step(
+    service: WorkflowService,
+    workflow_id: str,
+    step_id: str,
+    body: StepUpdate,
+) -> Optional[Step]:
+    """编辑 Step（名称、描述、创建者与回调路径）。失败返回 None。"""
+    return await service.edit_step(
+        workflow_id,
+        step_id,
+        name=body.name,
+        description=body.description,
+        creator=body.creator,
+        on_before_path=body.on_before_path,
+        on_start_path=body.on_start_path,
+        on_done_path=body.on_done_path,
+        on_retry_path=body.on_retry_path,
+    )
+
+
+async def re_run_step(
+    service: WorkflowService,
+    workflow_id: str,
+    step_id: str,
+    context: Optional[Dict[str, Any]] = None,
+) -> Optional[StepResult]:
+    """重执行指定 Step（先触发 on_retry_path）。未找到返回 None。"""
+    return await service.re_run_step(workflow_id, step_id, context=context)
+
+
 # ---------- Task 业务入口 ----------
 
 
@@ -246,6 +284,43 @@ async def delete_task(
     return await service.delete_task(workflow_id, step_id, task_id)
 
 
+async def edit_task(
+    service: WorkflowService,
+    workflow_id: str,
+    step_id: str,
+    task_id: str,
+    body: TaskUpdate,
+) -> Optional[Task]:
+    """编辑 Task（名称、描述、handler_path、params 与回调路径）。失败返回 None。"""
+    return await service.edit_task(
+        workflow_id,
+        step_id,
+        task_id,
+        name=body.name,
+        description=body.description,
+        creator=body.creator,
+        handler_path=body.handler_path,
+        params=body.params,
+        on_before_path=body.on_before_path,
+        on_start_path=body.on_start_path,
+        on_done_path=body.on_done_path,
+        on_retry_path=body.on_retry_path,
+    )
+
+
+async def re_run_task(
+    service: WorkflowService,
+    workflow_id: str,
+    step_id: str,
+    task_id: str,
+    context: Optional[Dict[str, Any]] = None,
+) -> Optional[TaskResult]:
+    """重执行指定 Task（先触发 on_retry_path）。未找到返回 None。"""
+    return await service.re_run_task(
+        workflow_id, step_id, task_id, context=context
+    )
+
+
 # ---------- 执行 ----------
 
 
@@ -257,3 +332,11 @@ async def run_workflow(
     """执行 Workflow。未找到返回 None。"""
     context: Dict[str, Any] = (body and body.context) or {}
     return await service.run_workflow(workflow_id, context=context)
+
+
+async def persist_workflow(
+    service: WorkflowService,
+    workflow_id: str,
+) -> bool:
+    """将 Workflow 全量同步到三张表。未配置持久化或未找到返回 False。"""
+    return await service.persist_workflow(workflow_id)
