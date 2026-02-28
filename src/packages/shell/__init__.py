@@ -5,6 +5,10 @@ Shell 命令执行模块
 - 同步/异步执行
 - 并发调用（无状态设计）
 - 实时流式输出（回调模式 / 生成器模式）
+- 可预知选项的交互命令：通过 stdin_input 预写 stdin（如 "1\\n" 选择第一项）
+
+注意：真正的 TTY 交互（如 npx 的菜单选择）需在真实终端或使用 npx --yes 等非交互参数；
+本模块仅支持「启动时一次性写入 stdin」的场景。
 
 使用示例：
     # 快捷方式
@@ -32,6 +36,9 @@ Shell 命令执行模块
     # 生成器模式
     for line in service.stream("npm install"):
         print(f"[{line.stream_type}] {line.content}")
+    
+    # 可预知选项的交互命令（预写 stdin）
+    result = service.run_async("npx some-prompt", stdin_input="1\\n")
     
     # 自定义配置
     from packages.shell import ShellConfig, create_shell_service

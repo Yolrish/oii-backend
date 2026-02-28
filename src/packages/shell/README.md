@@ -9,6 +9,7 @@
 - 📺 **实时输出** - 支持回调和生成器两种流式输出模式
 - 🧵 **线程池** - 同步方法可在线程池中异步执行
 - 🔒 **无状态设计** - 天然支持并发调用
+- ⌨️ **预写 stdin** - 支持 `stdin_input`，用于可预知选项的“伪交互”命令（如 npx 选第一项）
 
 ## 快速开始
 
@@ -131,6 +132,17 @@ results = await service.run_many_async(commands, concurrent=False)
 results = await service.run_many_async(commands, concurrent=True)
 ```
 
+### 需输入的命令（stdin_input）
+
+对选项固定、可预知的命令，可用 `stdin_input` 在启动时一次性写入 stdin（如 `"1\n"` 表示选第一项并回车）：
+
+```python
+# 预写选择，相当于用户输入 1 并回车
+result = await service.run_async("npx some-prompt", stdin_input="1\n")
+```
+
+> **说明**：真正的 TTY 多轮交互（如动态菜单）不支持；建议优先用工具的非交互参数（如 `npx --yes`）。
+
 ## 同步方法 vs 异步方法
 
 | 同步方法 | 异步方法 | 说明 |
@@ -202,8 +214,10 @@ if result:
 | `cwd` | None | 默认工作目录 |
 | `env` | None | 环境变量 |
 | `raise_on_error` | False | 失败时是否抛出异常 |
-| `max_concurrent` | 10 | 最大并发数 |
-| `thread_pool_size` | 4 | 线程池大小 |
+| `max_concurrent` | 10 | 最大并发数（服务层） |
+| `thread_pool_size` | 4 | 线程池大小（服务层） |
+
+执行方法均支持可选参数：`cwd`、`env`、`timeout`、`on_stdout`、`on_stderr`、`stdin_input`。
 
 ### 环境变量
 

@@ -78,6 +78,7 @@ class ShellService:
         timeout: Optional[int] = None,
         on_stdout: Optional[OutputCallback] = None,
         on_stderr: Optional[OutputCallback] = None,
+        stdin_input: Optional[str] = None,
     ) -> CommandResult:
         """
         执行命令（同步）
@@ -91,6 +92,7 @@ class ShellService:
             timeout: 超时时间
             on_stdout: stdout 回调
             on_stderr: stderr 回调
+            stdin_input: 可选，预写入子进程 stdin 的字符串（用于可预知选项的交互命令，如 npx）
         
         Returns:
             CommandResult
@@ -102,6 +104,7 @@ class ShellService:
             timeout=timeout,
             on_stdout=on_stdout,
             on_stderr=on_stderr,
+            stdin_input=stdin_input,
         )
     
     def stream(
@@ -111,6 +114,7 @@ class ShellService:
         cwd: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
         timeout: Optional[int] = None,
+        stdin_input: Optional[str] = None,
     ) -> Generator[StreamLine, None, CommandResult]:
         """
         生成器模式执行命令（同步）
@@ -120,6 +124,7 @@ class ShellService:
             cwd=cwd,
             env=env,
             timeout=timeout,
+            stdin_input=stdin_input,
         )
     
     def run_many(
@@ -130,6 +135,7 @@ class ShellService:
         cwd: Optional[str] = None,
         on_stdout: Optional[OutputCallback] = None,
         on_stderr: Optional[OutputCallback] = None,
+        stdin_input: Optional[str] = None,
     ) -> List[CommandResult]:
         """
         顺序执行多条命令（同步）
@@ -140,6 +146,7 @@ class ShellService:
             cwd=cwd,
             on_stdout=on_stdout,
             on_stderr=on_stderr,
+            stdin_input=stdin_input,
         )
     
     # ==================== 异步方法（推荐在 Web 后端使用）====================
@@ -154,6 +161,7 @@ class ShellService:
         on_stdout: Optional[OutputCallback] = None,
         on_stderr: Optional[OutputCallback] = None,
         use_semaphore: bool = True,
+        stdin_input: Optional[str] = None,
     ) -> CommandResult:
         """
         执行命令（异步，推荐在 Web 后端使用）
@@ -166,6 +174,7 @@ class ShellService:
             on_stdout: stdout 回调
             on_stderr: stderr 回调
             use_semaphore: 是否使用信号量进行并发控制
+            stdin_input: 可选，预写入子进程 stdin 的字符串（用于可预知选项的交互命令）
         
         Returns:
             CommandResult
@@ -179,6 +188,7 @@ class ShellService:
                     timeout=timeout,
                     on_stdout=on_stdout,
                     on_stderr=on_stderr,
+                    stdin_input=stdin_input,
                 )
         else:
             return await self.executor.run_async(
@@ -188,6 +198,7 @@ class ShellService:
                 timeout=timeout,
                 on_stdout=on_stdout,
                 on_stderr=on_stderr,
+                stdin_input=stdin_input,
             )
     
     async def run_in_thread(
@@ -199,6 +210,7 @@ class ShellService:
         timeout: Optional[int] = None,
         on_stdout: Optional[OutputCallback] = None,
         on_stderr: Optional[OutputCallback] = None,
+        stdin_input: Optional[str] = None,
     ) -> CommandResult:
         """
         在线程池中执行同步命令（适用于需要同步特性但不想阻塞事件循环的场景）
@@ -210,6 +222,7 @@ class ShellService:
             timeout: 超时时间
             on_stdout: stdout 回调
             on_stderr: stderr 回调
+            stdin_input: 可选，预写入子进程 stdin 的字符串
         
         Returns:
             CommandResult
@@ -226,6 +239,7 @@ class ShellService:
                     timeout=timeout,
                     on_stdout=on_stdout,
                     on_stderr=on_stderr,
+                    stdin_input=stdin_input,
                 )
             )
     
@@ -236,6 +250,7 @@ class ShellService:
         cwd: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
         timeout: Optional[int] = None,
+        stdin_input: Optional[str] = None,
     ) -> AsyncGenerator[StreamLine, None]:
         """
         异步流式执行命令
@@ -249,6 +264,7 @@ class ShellService:
             cwd: 工作目录
             env: 环境变量
             timeout: 超时时间
+            stdin_input: 可选，预写入子进程 stdin 的字符串
         
         Yields:
             StreamLine
@@ -267,13 +283,23 @@ class ShellService:
         line_number = 0
         
         async with self.semaphore:
+            stdin_arg = asyncio.subprocess.PIPE if stdin_input is not None else None
             process = await asyncio.create_subprocess_shell(
                 command,
+                stdin=stdin_arg,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
                 env=env,
             )
+            if stdin_input is not None and process.stdin is not None:
+                try:
+                    process.stdin.write(
+                        stdin_input.encode(self.config.encoding, errors="replace")
+                    )
+                    await process.stdin.drain()
+                finally:
+                    process.stdin.close()
             
             async def read_stream(
                 stream: asyncio.StreamReader,
@@ -345,6 +371,7 @@ class ShellService:
         cwd: Optional[str] = None,
         on_stdout: Optional[OutputCallback] = None,
         on_stderr: Optional[OutputCallback] = None,
+        stdin_input: Optional[str] = None,
     ) -> List[CommandResult]:
         """
         异步执行多条命令
@@ -356,6 +383,7 @@ class ShellService:
             cwd: 工作目录
             on_stdout: stdout 回调
             on_stderr: stderr 回调
+            stdin_input: 可选，预写入每条命令 stdin 的字符串
         
         Returns:
             CommandResult 列表
@@ -369,6 +397,7 @@ class ShellService:
                     on_stdout=on_stdout,
                     on_stderr=on_stderr,
                     use_semaphore=True,
+                    stdin_input=stdin_input,
                 )
                 for cmd in commands
             ]
@@ -383,6 +412,7 @@ class ShellService:
                     on_stdout=on_stdout,
                     on_stderr=on_stderr,
                     use_semaphore=True,
+                    stdin_input=stdin_input,
                 )
                 results.append(result)
                 if stop_on_error and not result.success:
@@ -454,6 +484,7 @@ def run(
     timeout: Optional[int] = None,
     on_stdout: Optional[OutputCallback] = None,
     on_stderr: Optional[OutputCallback] = None,
+    stdin_input: Optional[str] = None,
 ) -> CommandResult:
     """
     快捷函数：执行命令（同步）
@@ -466,6 +497,7 @@ def run(
         timeout=timeout,
         on_stdout=on_stdout,
         on_stderr=on_stderr,
+        stdin_input=stdin_input,
     )
 
 
@@ -476,6 +508,7 @@ async def run_async(
     timeout: Optional[int] = None,
     on_stdout: Optional[OutputCallback] = None,
     on_stderr: Optional[OutputCallback] = None,
+    stdin_input: Optional[str] = None,
 ) -> CommandResult:
     """
     快捷函数：执行命令（异步，推荐在 Web 后端使用）
@@ -486,4 +519,5 @@ async def run_async(
         timeout=timeout,
         on_stdout=on_stdout,
         on_stderr=on_stderr,
+        stdin_input=stdin_input,
     )

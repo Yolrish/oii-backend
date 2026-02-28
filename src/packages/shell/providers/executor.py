@@ -66,6 +66,7 @@ class ShellExecutor:
         on_stdout: Optional[OutputCallback] = None,
         on_stderr: Optional[OutputCallback] = None,
         raise_on_error: Optional[bool] = None,
+        stdin_input: Optional[str] = None,
     ) -> CommandResult:
         """
         同步执行命令
@@ -78,6 +79,7 @@ class ShellExecutor:
             on_stdout: stdout 实时输出回调（每行触发一次）
             on_stderr: stderr 实时输出回调（每行触发一次）
             raise_on_error: 执行失败时是否抛出异常（覆盖配置）
+            stdin_input: 可选，预写入子进程 stdin 的字符串（如 "1\\n" 选择第一项），用于可预知选项的交互命令
         
         Returns:
             CommandResult 包含执行结果
@@ -100,10 +102,13 @@ class ShellExecutor:
         stderr_lines: List[str] = []
         
         try:
+            # 需要预写 stdin 时使用 PIPE，否则不接管 stdin（子进程继承）
+            stdin_arg = subprocess.PIPE if stdin_input is not None else None
             # 创建子进程
             process = subprocess.Popen(
                 command,
                 shell=True,
+                stdin=stdin_arg,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=cwd,
@@ -113,6 +118,13 @@ class ShellExecutor:
                 errors="replace",
                 bufsize=1,  # 行缓冲
             )
+            # 若有预写输入，先写入并关闭 stdin，避免子进程阻塞等待输入导致死锁
+            if stdin_input is not None and process.stdin is not None:
+                try:
+                    process.stdin.write(stdin_input)
+                    process.stdin.flush()
+                finally:
+                    process.stdin.close()
             
             # 使用线程读取 stdout 和 stderr，实现实时输出
             def read_stream(stream, lines_list: List[str], callback: Optional[OutputCallback]):
@@ -192,6 +204,7 @@ class ShellExecutor:
         on_stdout: Optional[OutputCallback] = None,
         on_stderr: Optional[OutputCallback] = None,
         raise_on_error: Optional[bool] = None,
+        stdin_input: Optional[str] = None,
     ) -> CommandResult:
         """
         异步执行命令（适合并发场景）
@@ -204,6 +217,7 @@ class ShellExecutor:
             on_stdout: stdout 实时输出回调
             on_stderr: stderr 实时输出回调
             raise_on_error: 执行失败时是否抛出异常
+            stdin_input: 可选，预写入子进程 stdin 的字符串，用于可预知选项的交互命令
         
         Returns:
             CommandResult 包含执行结果
@@ -221,14 +235,24 @@ class ShellExecutor:
         stderr_lines: List[str] = []
         
         try:
+            # 需要预写 stdin 时使用 PIPE
+            stdin_arg = asyncio.subprocess.PIPE if stdin_input is not None else None
             # 创建异步子进程
             process = await asyncio.create_subprocess_shell(
                 command,
+                stdin=stdin_arg,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
                 env=env,
             )
+            # 若有预写输入，先写入并关闭 stdin（asyncio 子进程 stdin 为 StreamWriter，写 bytes）
+            if stdin_input is not None and process.stdin is not None:
+                try:
+                    process.stdin.write(stdin_input.encode(self.config.encoding, errors="replace"))
+                    await process.stdin.drain()
+                finally:
+                    process.stdin.close()
             
             async def read_stream_async(
                 stream: asyncio.StreamReader,
@@ -291,6 +315,7 @@ class ShellExecutor:
         cwd: Optional[str] = None,
         env: Optional[Dict[str, str]] = None,
         timeout: Optional[int] = None,
+        stdin_input: Optional[str] = None,
     ) -> Generator[StreamLine, None, CommandResult]:
         """
         生成器模式执行命令，逐行 yield 输出
@@ -305,6 +330,7 @@ class ShellExecutor:
             cwd: 工作目录
             env: 环境变量
             timeout: 超时时间
+            stdin_input: 可选，预写入子进程 stdin 的字符串
         
         Yields:
             StreamLine 对象，包含每行内容和流类型
@@ -324,9 +350,11 @@ class ShellExecutor:
         line_number = 0
         
         try:
+            stdin_arg = subprocess.PIPE if stdin_input is not None else None
             process = subprocess.Popen(
                 command,
                 shell=True,
+                stdin=stdin_arg,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=cwd,
@@ -335,6 +363,12 @@ class ShellExecutor:
                 encoding=self.config.encoding,
                 errors="replace",
             )
+            if stdin_input is not None and process.stdin is not None:
+                try:
+                    process.stdin.write(stdin_input)
+                    process.stdin.flush()
+                finally:
+                    process.stdin.close()
             
             import selectors
             
@@ -418,6 +452,7 @@ class ShellExecutor:
         cwd: Optional[str] = None,
         on_stdout: Optional[OutputCallback] = None,
         on_stderr: Optional[OutputCallback] = None,
+        stdin_input: Optional[str] = None,
     ) -> List[CommandResult]:
         """
         顺序执行多条命令
@@ -440,6 +475,7 @@ class ShellExecutor:
                 cwd=cwd,
                 on_stdout=on_stdout,
                 on_stderr=on_stderr,
+                stdin_input=stdin_input,
             )
             results.append(result)
             
@@ -457,6 +493,7 @@ class ShellExecutor:
         cwd: Optional[str] = None,
         on_stdout: Optional[OutputCallback] = None,
         on_stderr: Optional[OutputCallback] = None,
+        stdin_input: Optional[str] = None,
     ) -> List[CommandResult]:
         """
         异步执行多条命令
@@ -475,7 +512,13 @@ class ShellExecutor:
         if concurrent:
             # 并发执行
             tasks = [
-                self.run_async(cmd, cwd=cwd, on_stdout=on_stdout, on_stderr=on_stderr)
+                self.run_async(
+                    cmd,
+                    cwd=cwd,
+                    on_stdout=on_stdout,
+                    on_stderr=on_stderr,
+                    stdin_input=stdin_input,
+                )
                 for cmd in commands
             ]
             return await asyncio.gather(*tasks)
@@ -488,6 +531,7 @@ class ShellExecutor:
                     cwd=cwd,
                     on_stdout=on_stdout,
                     on_stderr=on_stderr,
+                    stdin_input=stdin_input,
                 )
                 results.append(result)
                 if stop_on_error and not result.success:
