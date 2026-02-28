@@ -1,6 +1,5 @@
-"""
-Shell 配置模块
-"""
+"""Shell 配置：ShellConfig、default_config"""
+
 from .config import ShellConfig, default_config
 
 __all__ = [

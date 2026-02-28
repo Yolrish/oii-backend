@@ -1,6 +1,7 @@
 """
-Workflow API 依赖（供 FastAPI Depends 使用）
-需在应用 lifespan 中将 WorkflowService 注入到 app.state.workflow_service
+Workflow API 依赖：get_workflow_service
+
+供 FastAPI Depends 使用；需在应用 lifespan 中将 WorkflowService 注入 app.state.workflow_service。
 """
 from fastapi import Request, HTTPException, status
 

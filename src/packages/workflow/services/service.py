@@ -180,6 +180,29 @@ class WorkflowService:
             await save_step(self._db, self._step_coll(), end_step)
         return w
 
+    async def register_workflow_from_ai(
+        self,
+        data: Dict[str, Any],
+        workflow_id: Optional[str] = None,
+    ) -> Workflow:
+        """
+        接收 AI 指定格式的 dict（如 JSON 反序列化结果），解析为 Workflow 并注册到服务。
+        若开启持久化则同步写入三张表。对应 README 流程：接收 AI 输出 → parse_ai_workflow_from_dict → 注册 → 可执行。
+        """
+        from ..ai_spec import parse_ai_workflow_from_dict
+
+        w = parse_ai_workflow_from_dict(data, workflow_id)
+        lock = await self._lock_for(w.id)
+        async with lock:
+            self._workflows[w.id] = w
+            if self._db is not None and self.config.persist_enabled:
+                await save_workflow_meta(self._db, self._wf_coll(), w)
+                for s in w.steps:
+                    await save_step(self._db, self._step_coll(), s)
+                    for t in s.tasks:
+                        await save_task(self._db, self._task_coll(), t)
+        return w
+
     async def get_workflow(self, workflow_id: str) -> Optional[Workflow]:
         """根据 id 获取 workflow；若不在内存且已开启持久化则从 DB 按需加载"""
         return await self._ensure_workflow(workflow_id)

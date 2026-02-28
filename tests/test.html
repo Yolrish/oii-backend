@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Workflow AI Spec Test</title>
+  <style>
+    :root {
+      --bg: #1a1b26;
+      --surface: #24283b;
+      --text: #c0caf5;
+      --muted: #565f89;
+      --accent: #7aa2f7;
+      --success: #9ece6a;
+      --error: #f7768e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 1.5rem;
+      line-height: 1.5;
+    }
+    .page { max-width: 56rem; margin: 0 auto; }
+    .page__title { font-size: 1.5rem; margin-bottom: 0.5rem; color: var(--accent); }
+    .page__desc { font-size: 0.875rem; color: var(--muted); margin-bottom: 1.5rem; }
+    .page__section { margin-bottom: 2rem; }
+
+    .form { background: var(--surface); border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+    .form__row { margin-bottom: 0.75rem; }
+    .form__label { display: block; font-size: 0.875rem; color: var(--muted); margin-bottom: 0.25rem; }
+    .form__input, .form__textarea {
+      width: 100%;
+      padding: 0.5rem 0.75rem;
+      background: var(--bg);
+      border: 1px solid var(--muted);
+      border-radius: 6px;
+      color: var(--text);
+      font-size: 0.9375rem;
+      font-family: inherit;
+    }
+    .form__textarea { min-height: 12rem; resize: vertical; }
+    .form__input::placeholder, .form__textarea::placeholder { color: var(--muted); }
+    .form__actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; align-items: center; }
+    .form__flow { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+
+    .btn {
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.875rem;
+      cursor: pointer;
+      background: var(--accent);
+      color: var(--bg);
+    }
+    .btn:hover { filter: brightness(1.1); }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .btn--secondary { background: var(--muted); color: var(--text); }
+    .btn--danger { background: var(--error); color: #fff; }
+
+    .out {
+      background: var(--bg);
+      border: 1px solid var(--muted);
+      border-radius: 6px;
+      padding: 1rem;
+      font-family: ui-monospace, monospace;
+      font-size: 0.8125rem;
+      white-space: pre-wrap;
+      word-break: break-all;
+      min-height: 3rem;
+      max-height: 18rem;
+      overflow-y: auto;
+    }
+    .out--success { border-color: var(--success); }
+    .out--error { border-color: var(--error); }
+    .out__label { font-size: 0.75rem; color: var(--muted); margin-bottom: 0.5rem; }
+
+    .status { font-size: 0.875rem; color: var(--muted); margin-top: 0.5rem; }
+    .status--ok { color: var(--success); }
+    .status--err { color: var(--error); }
+
+    .flow-step { font-size: 0.875rem; color: var(--muted); }
+    .flow-step strong { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1 class="page__title">Workflow AI Spec Test</h1>
+    <p class="page__desc">Expected flow (per README): 1) Receive AI output (JSON) → 2) Parse to Workflow via ai_spec and register → 3) Run workflow.</p>
+
+    <section class="page__section">
+      <div class="form">
+        <div class="form__row">
+          <label class="form__label">API base URL</label>
+          <input type="text" id="baseUrl" class="form__input" value="http://localhost:8000/api/v1" placeholder="http://localhost:8000/api/v1" />
+        </div>
+      </div>
+    </section>
+
+    <section class="page__section">
+      <h2 class="page__section-title" style="font-size:1.1rem; margin-bottom:0.5rem;">Step 1 — AI output (JSON)</h2>
+      <p class="flow-step" style="margin-bottom:0.75rem;">Paste or edit the AI-returned format: <strong>name</strong>, <strong>steps</strong> (each step: <strong>name</strong>, <strong>tasks</strong> with <strong>handler</strong>, <strong>params</strong>).</p>
+      <div class="form">
+        <div class="form__row">
+          <label class="form__label">AI format JSON</label>
+          <textarea id="aiJson" class="form__textarea" spellcheck="false"></textarea>
+        </div>
+        <div class="form__actions">
+          <button type="button" id="btnResetDefault" class="btn btn--secondary">Reset to default (create D:\code\workflow.test)</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="page__section">
+      <h2 class="page__section-title" style="font-size:1.1rem; margin-bottom:0.5rem;">Step 2 — Parse AI & create workflow</h2>
+      <p class="flow-step" style="margin-bottom:0.75rem;">POST <strong>/workflows/from-ai</strong>: parse AI JSON → register workflow (and persist if enabled).</p>
+      <div class="form__actions form__flow">
+        <button type="button" id="btnFromAi" class="btn">1. Parse AI & create workflow</button>
+        <span class="flow-step" id="createdIdHint"></span>
+      </div>
+      <div class="out__label">Create response</div>
+      <pre id="createResult" class="out"></pre>
+      <div id="createStatus" class="status"></div>
+    </section>
+
+    <section class="page__section">
+      <h2 class="page__section-title" style="font-size:1.1rem; margin-bottom:0.5rem;">Step 3 — Run workflow</h2>
+      <p class="flow-step" style="margin-bottom:0.75rem;">POST <strong>/workflows/{id}/run</strong>: execute steps in order, tasks in parallel within each step.</p>
+      <div class="form">
+        <div class="form__row">
+          <label class="form__label">Workflow ID (filled after step 2, or paste)</label>
+          <input type="text" id="workflowId" class="form__input" placeholder="workflow_xxx" />
+        </div>
+        <div class="form__actions form__flow">
+          <button type="button" id="btnRunWorkflow" class="btn">2. Run workflow</button>
+        </div>
+      </div>
+      <div class="out__label">Run result</div>
+      <pre id="runResult" class="out"></pre>
+      <div id="runStatus" class="status"></div>
+    </section>
+
+    <section class="page__section">
+      <h2 class="page__section-title" style="font-size:1.1rem; margin-bottom:0.5rem;">Optional — Get / Delete workflow</h2>
+      <div class="form__actions">
+        <button type="button" id="btnGetWorkflow" class="btn btn--secondary">Get workflow</button>
+        <button type="button" id="btnDeleteWorkflow" class="btn btn--danger">Delete workflow</button>
+      </div>
+      <div class="out__label">API response</div>
+      <pre id="apiResult" class="out"></pre>
+      <div id="apiStatus" class="status"></div>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      const DEFAULT_AI_JSON = {
+        name: "Create file workflow",
+        steps: [
+          {
+            name: "CreateFileStep",
+            tasks: [
+              {
+                name: "CreateFileTask",
+                handler: "packages.shell.api.controller.run_command_task",
+                params: {
+                  command: "mkdir \"D:\\code\" 2>nul & type nul > \"D:\\code\\workflow.test\""
+                }
+              }
+            ]
+          }
+        ]
+      };
+
+      const baseUrlEl = document.getElementById("baseUrl");
+      const aiJsonEl = document.getElementById("aiJson");
+      const workflowIdEl = document.getElementById("workflowId");
+      const createdIdHintEl = document.getElementById("createdIdHint");
+      const createResultEl = document.getElementById("createResult");
+      const createStatusEl = document.getElementById("createStatus");
+      const runResultEl = document.getElementById("runResult");
+      const runStatusEl = document.getElementById("runStatus");
+      const apiResultEl = document.getElementById("apiResult");
+      const apiStatusEl = document.getElementById("apiStatus");
+
+      function baseUrl() {
+        return baseUrlEl.value.trim().replace(/\/$/, "") || "http://localhost:8000/api/v1";
+      }
+
+      function setCreateResult(text, isError) {
+        createResultEl.textContent = text;
+        createResultEl.className = "out" + (isError ? " out--error" : " out--success");
+      }
+      function setCreateStatus(text, isError) {
+        createStatusEl.textContent = text;
+        createStatusEl.className = "status" + (isError ? " status--err" : " status--ok");
+      }
+      function setRunResult(text, isError) {
+        runResultEl.textContent = text;
+        runResultEl.className = "out" + (isError ? " out--error" : " out--success");
+      }
+      function setRunStatus(text, isError) {
+        runStatusEl.textContent = text;
+        runStatusEl.className = "status" + (isError ? " status--err" : " status--ok");
+      }
+      function setApiResult(text, isError) {
+        apiResultEl.textContent = text;
+        apiResultEl.className = "out" + (isError ? " out--error" : " out--success");
+      }
+      function setApiStatus(text, isError) {
+        apiStatusEl.textContent = text;
+        apiStatusEl.className = "status" + (isError ? " status--err" : " status--ok");
+      }
+
+      function getAiJson() {
+        const raw = aiJsonEl.value.trim();
+        if (!raw) return null;
+        try {
+          return JSON.parse(raw);
+        } catch (e) {
+          return null;
+        }
+      }
+
+      function setDefaultAiJson() {
+        aiJsonEl.value = JSON.stringify(DEFAULT_AI_JSON, null, 2);
+      }
+
+      async function request(method, path, body) {
+        const url = baseUrl() + path;
+        const opt = { method, headers: { "Content-Type": "application/json" } };
+        if (body != null) opt.body = JSON.stringify(body);
+        const res = await fetch(url, opt);
+        const text = await res.text();
+        let data = null;
+        try { data = text ? JSON.parse(text) : null; } catch (_) {}
+        return { ok: res.ok, status: res.status, data, text };
+      }
+
+      document.getElementById("btnResetDefault").addEventListener("click", setDefaultAiJson);
+
+      document.getElementById("btnFromAi").addEventListener("click", async function () {
+        const btn = this;
+        const payload = getAiJson();
+        if (!payload) {
+          setCreateResult("Invalid or empty JSON. Use a valid AI format: { name, steps: [ { name, tasks: [ { handler, params } ] } ] }");
+          setCreateStatus("Parse JSON first", true);
+          return;
+        }
+        btn.disabled = true;
+        setCreateResult("…");
+        setCreateStatus("");
+        createdIdHintEl.textContent = "";
+        try {
+          const res = await request("POST", "/workflows/from-ai", payload);
+          setCreateResult(res.text || JSON.stringify(res.data, null, 2));
+          if (!res.ok) {
+            setCreateStatus("HTTP " + res.status, true);
+            return;
+          }
+          setCreateStatus("Workflow created and registered.", false);
+          const wfId = res.data && res.data.id;
+          if (wfId) {
+            workflowIdEl.value = wfId;
+            createdIdHintEl.textContent = "Workflow ID: " + wfId;
+          }
+        } catch (e) {
+          setCreateResult(e.message || String(e));
+          setCreateStatus("Request failed", true);
+        } finally {
+          btn.disabled = false;
+        }
+      });
+
+      document.getElementById("btnRunWorkflow").addEventListener("click", async function () {
+        const id = workflowIdEl.value.trim();
+        if (!id) {
+          setRunResult("Enter or paste workflow ID (from step 2).");
+          setRunStatus("", false);
+          return;
+        }
+        setRunResult("…");
+        setRunStatus("");
+        try {
+          const res = await request("POST", "/workflows/" + encodeURIComponent(id) + "/run", { context: {} });
+          setRunResult(res.text || JSON.stringify(res.data, null, 2));
+          setRunStatus(res.ok && res.data && res.data.success ? "Run succeeded. Check D:\\code\\workflow.test if using default." : (res.ok ? "Run finished." : "HTTP " + res.status), !res.ok);
+        } catch (e) {
+          setRunResult(e.message || String(e));
+          setRunStatus("Request failed", true);
+        }
+      });
+
+      document.getElementById("btnGetWorkflow").addEventListener("click", async function () {
+        const id = workflowIdEl.value.trim();
+        if (!id) {
+          setApiResult("Enter workflow ID");
+          setApiStatus("", false);
+          return;
+        }
+        setApiResult("…");
+        try {
+          const res = await request("GET", "/workflows/" + encodeURIComponent(id));
+          setApiResult(res.text || JSON.stringify(res.data, null, 2));
+          setApiStatus(res.ok ? "OK" : "HTTP " + res.status, !res.ok);
+        } catch (e) {
+          setApiResult(e.message || String(e));
+          setApiStatus("Error", true);
+        }
+      });
+
+      document.getElementById("btnDeleteWorkflow").addEventListener("click", async function () {
+        const id = workflowIdEl.value.trim();
+        if (!id) {
+          setApiResult("Enter workflow ID");
+          return;
+        }
+        setApiResult("…");
+        try {
+          const res = await request("DELETE", "/workflows/" + encodeURIComponent(id));
+          setApiResult(res.ok ? "Deleted " + id : res.text || "HTTP " + res.status);
+          setApiStatus(res.ok ? "Deleted" : "HTTP " + res.status, !res.ok);
+          if (res.ok) workflowIdEl.value = "";
+        } catch (e) {
+          setApiResult(e.message || String(e));
+          setApiStatus("Error", true);
+        }
+      });
+
+      setDefaultAiJson();
+    })();
+  </script>
+</body>
+</html>

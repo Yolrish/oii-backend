@@ -1,6 +1,8 @@
 # Shell 命令执行模块
 
-提供系统命令行执行能力，支持 Web 后端高并发场景。
+在**部署服务器本地**执行系统命令，支持同步/异步、并发控制与实时输出。
+
+**安全约定**：本模块**不向 Web 暴露 API**，仅供服务端内部调用（如 Workflow Task 通过 `packages.shell.api.controller.run_command_task`、后台任务、脚本等）。避免将“执行任意命令”的 HTTP 接口暴露给前端。
 
 ## 特性
 
@@ -25,33 +27,16 @@ result = await run_async("git status")
 print(result.stdout)
 ```
 
-### FastAPI 中使用
+### 服务端内部使用（示例）
+
+本模块不提供 HTTP 接口，仅在服务端代码中调用，例如由 Workflow Task 或后台任务触发：
 
 ```python
-from fastapi import FastAPI
 from packages.shell import create_shell_service
 
-app = FastAPI()
+# 在业务逻辑中获取服务并执行（如 Workflow 的 handler_path 指向 packages.shell.api.controller.run_command_task）
 shell = create_shell_service(max_concurrent=10)
-
-@app.get("/run")
-async def run_command(cmd: str):
-    result = await shell.run_async(cmd, timeout=30)
-    return {
-        "success": result.success,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-    }
-
-@app.get("/stream")
-async def stream_command(cmd: str):
-    from fastapi.responses import StreamingResponse
-    
-    async def generate():
-        async for line in shell.stream_async(cmd):
-            yield f"data: {line.content}\n\n"
-    
-    return StreamingResponse(generate(), media_type="text/event-stream")
+result = await shell.run_async("git status", timeout=30)
 ```
 
 ## API
@@ -265,23 +250,41 @@ finally:
     service.close()
 ```
 
-## 目录结构
+## 模块结构
+
+与 workflow 包同风格分层；**api 仅含 controller util**，无 Router、不向 Web 暴露接口。
 
 ```
 shell/
-├── __init__.py          # 模块入口
+├── __init__.py              # 包入口，统一导出
 ├── configs/
-│   └── config.py        # ShellConfig 配置类
+│   ├── __init__.py
+│   └── config.py            # ShellConfig、default_config
 ├── models/
-│   └── models.py        # CommandResult, StreamLine 等
+│   ├── __init__.py
+│   └── models.py            # CommandResult、StreamType、StreamLine
 ├── providers/
-│   ├── executor.py      # ShellExecutor 核心执行器
-│   └── exceptions.py    # 异常定义
+│   ├── __init__.py
+│   ├── executor.py          # ShellExecutor（同步/异步执行）
+│   └── exceptions.py       # ShellError / ShellTimeoutError / ShellExecutionError
 ├── services/
-│   └── service.py       # ShellService 服务层
-├── example.py           # 使用示例
-└── README.md
+│   ├── __init__.py
+│   └── service.py           # ShellService、create_shell_service、run/run_async
+├── api/
+│   ├── __init__.py
+│   └── controller.py       # util：run_command(service, ...)；run_command_task(context, **params) 供 Workflow
+└── example.py              # 使用示例
 ```
+
+| 层级 | 职责 |
+|------|------|
+| **configs** | 配置项与默认值 |
+| **models** | 命令执行结果、流类型等数据模型 |
+| **providers** | 底层执行器与异常，不直接对外 |
+| **services** | 服务层：并发控制、线程池、run/stream 等入口 |
+| **api** | 仅 **controller**：run_command(service, ...) 内部通用；run_command_task(context, **params) 供 Workflow，无 Router、无 HTTP |
+
+**api 仅含 controller**：不提供 Router 或 HTTP 端点，避免在公网暴露“执行任意命令”的能力。
 
 ## 使用示例
 

@@ -1,7 +1,7 @@
 """
-持久化辅助：根据模块路径解析要执行的函数
+Handler 路径解析：字符串 → callable
 
-供 ai_spec 等模块在从 Spec 加载 Workflow 时，将 handler 路径解析为 callable。
+Task 执行时由 Service 调用 resolve_handler(handler_path) 得到可执行函数。
 """
 
 from typing import Any, Callable, Optional

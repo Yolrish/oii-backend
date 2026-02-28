@@ -13,6 +13,45 @@
 - **创建 / 存储**：只使用字符串（`handler_path`、`on_before_path` / `on_start_path` / `on_done_path` / `on_retry_path`）。创建 workflow、step、task 时**不传递函数**，只传递模块路径字符串。
 - **执行**：在 `run_workflow` / `_run_step` / `_run_task` 中，将路径解析为函数再执行。
 
+## 模块结构
+
+```
+workflow/
+├── __init__.py              # 包入口，统一导出
+├── configs/
+│   ├── __init__.py
+│   └── config.py            # WorkflowConfig、default_config
+├── models/
+│   ├── __init__.py
+│   ├── models.py            # Workflow / Step / Task / *Result 领域模型
+│   └── persistence.py       # resolve_handler(路径字符串 → callable)
+├── services/
+│   ├── __init__.py
+│   └── service.py           # WorkflowService、create_workflow_service
+├── repositories/
+│   ├── __init__.py
+│   └── repository.py        # 三表持久化（workflow / step / task）
+├── ai_spec/
+│   ├── __init__.py
+│   ├── schemas.py           # WorkflowSpec / StepSpec / TaskSpec（AI 格式）
+│   └── mapper.py            # parse_ai_workflow、dict_to_workflow_spec 等
+└── api/
+    ├── __init__.py
+    ├── deps.py              # get_workflow_service（FastAPI Depends）
+    ├── schemas.py           # 请求/响应 Pydantic Schema
+    ├── controller.py        # 业务入口 util（供内部或 Router 调用）
+    └── routes.py            # FastAPI Router，基于 controller 暴露 HTTP
+```
+
+| 层级 | 职责 |
+|------|------|
+| **configs** | 配置项与默认值 |
+| **models** | 领域模型；`resolve_handler` 将 handler 路径字符串解析为可执行函数 |
+| **services** | 业务逻辑：创建/编排/执行 workflow，内部调用 repositories、resolve_handler |
+| **repositories** | 数据库读写（三张表） |
+| **ai_spec** | AI 指定格式 ↔ Workflow 的转换（仅路径字符串，不解析为函数） |
+| **api** | Web 层：Router 暴露 HTTP；Controller 为 util，供 Router 或内部调用 |
+
 ## 概念与存储字段
 
 - **Workflow**：工作流。至少存储：**id**、**创建者**（creator）、**创建时间**（created_at）、**名称**（name）、**描述**（description）、**起始 step id**（first_step_id）、**结束 step id**（end_step_id）、**step 列表**（steps）。创建时默认包含起始节点与结束节点，二者不可删除。

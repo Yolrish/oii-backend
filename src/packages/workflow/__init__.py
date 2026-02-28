@@ -1,24 +1,14 @@
 """
 动态 Workflow 包
 
-设计初衷：根据 AI 回答自定义创建工作流。
-流程：接收 AI 返回的指定格式数据 → 由 ai_spec 模块对应为要执行的函数列表 → 由上到下执行。
-两处映射：1. 整体函数执行（execution_handler） 2. Task 的执行函数/回调（handler + on_* 路径）。
-
-使用示例：
-    # 从 AI 指定格式解析并执行
-    from packages.workflow import dict_to_workflow_spec, parse_ai_workflow
-    spec = dict_to_workflow_spec(ai_response_json)
-    w = parse_ai_workflow(spec)
-    result = await svc.run_workflow(w.id, context={})
-
-    # 持久化（三张表：workflows / workflow_steps / workflow_tasks）
-    from packages.workflow import save_workflow_spec, load_workflow_from_db
-    await save_workflow_spec(db, "workflows", spec)
-    w = await load_workflow_from_db(db, "workflows", "workflow_steps", "workflow_tasks", workflow_id)
+设计：接收 AI 指定格式 → ai_spec 转为 Workflow（仅路径字符串）→ 执行时 resolve_handler 解析为函数并执行。
+结构见 README「模块结构」：configs / models / services / repositories / ai_spec / api（Router + Controller util）。
 """
 
+# 配置
 from .configs import WorkflowConfig, default_config
+
+# 领域模型与路径解析
 from .models import (
     Task,
     TaskResultContent,
@@ -30,11 +20,15 @@ from .models import (
     WorkflowResult,
     resolve_handler,
 )
+
+# 服务层
 from .services import (
     WorkflowService,
     create_workflow_service,
     get_default_service,
 )
+
+# AI 指定格式
 from .ai_spec import (
     TaskSpec,
     StepSpec,
@@ -45,6 +39,8 @@ from .ai_spec import (
     workflow_spec_to_dict,
     dict_to_workflow_spec,
 )
+
+# 持久化
 from .repositories import (
     save_workflow_spec,
     save_workflow_meta,
@@ -56,6 +52,8 @@ from .repositories import (
     workflow_to_doc,
     doc_to_workflow,
 )
+
+# HTTP API（Router + Controller util + Schemas）
 from .api import (
     router as workflow_router,
     get_workflow_service,
@@ -70,8 +68,10 @@ from .api import (
 )
 
 __all__ = [
+    # configs
     "WorkflowConfig",
     "default_config",
+    # models
     "Task",
     "TaskResultContent",
     "TaskResultType",
@@ -81,10 +81,11 @@ __all__ = [
     "TaskResult",
     "WorkflowResult",
     "resolve_handler",
+    # services
     "WorkflowService",
     "create_workflow_service",
     "get_default_service",
-    # AI 指定格式与持久化
+    # ai_spec
     "TaskSpec",
     "StepSpec",
     "WorkflowSpec",
@@ -93,6 +94,7 @@ __all__ = [
     "workflow_to_spec",
     "workflow_spec_to_dict",
     "dict_to_workflow_spec",
+    # repositories
     "save_workflow_spec",
     "save_workflow_meta",
     "load_workflow_spec",
@@ -102,7 +104,7 @@ __all__ = [
     "save_workflow_task_result",
     "workflow_to_doc",
     "doc_to_workflow",
-    # HTTP API
+    # api
     "workflow_router",
     "get_workflow_service",
     "WorkflowCreate",
