@@ -1,10 +1,13 @@
 """
 Workflow 运行与持久化配置
+优先级：os.environ > workflow 包 .env > 默认值
 """
 
 import os
 from dataclasses import dataclass
 from typing import Optional
+
+from load_env import load_module_env
 
 
 @dataclass
@@ -36,7 +39,8 @@ class WorkflowConfig:
 
     @classmethod
     def from_env(cls) -> "WorkflowConfig":
-        """从环境变量加载配置"""
+        """从环境变量加载配置（优先内存，其次 workflow/.env，最后默认值）"""
+        load_module_env(__file__)
         persist = os.getenv("WORKFLOW_PERSIST_ENABLED", "").lower() in (
             "1",
             "true",

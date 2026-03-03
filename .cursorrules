@@ -1,0 +1,11 @@
+# 编程风格与约定
+
+## 通用
+- 代码注释使用中文。
+
+## 回复与前端
+- 回复用户使用中文；面向用户的 UI 文案使用英文。
+
+## 分层与 API
+- **Router**：只做 HTTP（解析请求、调 controller、组响应）。
+- **Controller**：util 函数（非类），接收 service 与参数，返回领域模型或 None/False；与 routes 一一对应。

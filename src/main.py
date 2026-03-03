@@ -7,10 +7,8 @@ _src_dir = Path(__file__).resolve().parent
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
-# 尽早加载 .env：当前工作目录可能是项目根，优先加载项目根下的 .env
-from dotenv import load_dotenv
-_project_root = _src_dir.parent
-load_dotenv(_project_root / ".env")
+# 最先加载项目根 .env 到 os.environ，必须在任何其他项目导入之前
+import load_env  # noqa: F401, E402
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

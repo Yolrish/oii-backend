@@ -1,11 +1,17 @@
 """
 FFmpeg 配置
+优先级：os.environ > ffmpeg 包 .env > 默认值
 """
 import os
 import tempfile
 from dataclasses import dataclass, field
 from typing import Optional
 import shutil
+
+from load_env import load_module_env
+
+# 模块加载时补充 ffmpeg 包 .env（不覆盖已有变量）
+load_module_env(__file__)
 
 
 # 环境变量名称
