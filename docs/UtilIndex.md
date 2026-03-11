@@ -43,3 +43,18 @@
 - 前端通过 auth0-spa-js 登录，后端只验证 Token
 - 认证依赖：`get_current_user`、`get_optional_user`、`require_admin`
 - chat session 关联 `user_id`，实现用户数据隔离
+
+## API 安全审计
+
+### 已禁用的路由（从 router.py 注释掉）
+
+| 模块 | 原因 | 恢复条件 |
+|------|------|---------|
+| `users.py` | 脚手架演示，认证仅检查 `X-User-Id` 请求头（可伪造） | 迁移为 Auth0 认证后启用 |
+| `items.py` | 脚手架演示，大部分端点无认证 | 迁移为 Auth0 认证后启用 |
+| `workflow` | 全部端点无认证，`/run` 可通过 shell handler 执行任意代码 | 添加认证 + 权限控制后启用 |
+
+### 已补全认证的路由
+
+- **chat**：`get/patch/delete /sessions/{id}` 和 `post/get /sessions/{id}/messages` 增加 `get_current_user` + `user_id` 归属校验（403）
+- **prompt**：`post/put/delete` 写操作增加 `get_current_user`；读操作（list/get/render）保持公开

@@ -95,11 +95,14 @@ async def list_sessions(
 @chat_router.get("/sessions/{session_id}", summary="Get chat session")
 async def get_session(
     session_id: str,
+    user: User = Depends(get_current_user),
     service: ChatService = Depends(_get_chat_service),
 ) -> dict:
     session = await service.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    if session.user_id and session.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
     return _session_to_dict(session)
 
 
@@ -107,27 +110,35 @@ async def get_session(
 async def update_session(
     session_id: str,
     req: UpdateSessionRequest,
+    user: User = Depends(get_current_user),
     service: ChatService = Depends(_get_chat_service),
 ) -> dict:
+    existing = await service.get_session(session_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if existing.user_id and existing.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
     session = await service.update_session_settings(
         session_id,
         title=req.title,
         system_prompt=req.system_prompt,
         use_tools=req.use_tools,
     )
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
     return _session_to_dict(session)
 
 
 @chat_router.delete("/sessions/{session_id}", summary="Delete chat session")
 async def delete_session(
     session_id: str,
+    user: User = Depends(get_current_user),
     service: ChatService = Depends(_get_chat_service),
 ) -> dict:
-    ok = await service.delete_session(session_id)
-    if not ok:
+    existing = await service.get_session(session_id)
+    if not existing:
         raise HTTPException(status_code=404, detail="Session not found")
+    if existing.user_id and existing.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+    await service.delete_session(session_id)
     return {"deleted": True}
 
 
@@ -141,6 +152,7 @@ async def delete_session(
 async def send_message(
     session_id: str,
     req: SendMessageRequest,
+    user: User = Depends(get_current_user),
     service: ChatService = Depends(_get_chat_service),
 ):
     """
@@ -149,6 +161,12 @@ async def send_message(
     stream=false: 等待完整响应后返回 JSON
     stream=true: SSE 流式输出（Content-Type: text/event-stream）
     """
+    existing = await service.get_session(session_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if existing.user_id and existing.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     if req.stream:
         return StreamingResponse(
             service.send_message_stream(session_id, req.content),
@@ -188,8 +206,14 @@ async def get_messages(
     session_id: str,
     limit: int = 50,
     offset: int = 0,
+    user: User = Depends(get_current_user),
     service: ChatService = Depends(_get_chat_service),
 ) -> dict:
+    existing = await service.get_session(session_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if existing.user_id and existing.user_id != user.id:
+        raise HTTPException(status_code=403, detail="Access denied")
     messages = await service.get_messages(session_id, limit=limit, offset=offset)
     return {
         "messages": [_message_to_dict(m) for m in messages],
