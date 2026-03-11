@@ -5,7 +5,10 @@ API v1 路由聚合
 from fastapi import APIRouter
 
 from api.v1.endpoints import health, users, items
-from packages.workflow import workflow_router
+from features.workflow import workflow_router
+from features.chat.api import chat_router
+from features.prompt.api import prompt_router
+from features.auth.api import auth_router
 
 # 创建 v1 版本的主路由
 api_router = APIRouter()
@@ -15,3 +18,6 @@ api_router.include_router(health.router)
 api_router.include_router(users.router)
 api_router.include_router(items.router)
 api_router.include_router(workflow_router)
+api_router.include_router(chat_router)
+api_router.include_router(prompt_router)
+api_router.include_router(auth_router)

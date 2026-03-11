@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chat Test</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0f0f0f; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; }
+
+  .chat-header { padding: 16px 24px; background: #1a1a1a; border-bottom: 1px solid #2a2a2a; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+  .chat-header h1 { font-size: 16px; font-weight: 600; }
+  .chat-header .session-id { font-size: 12px; color: #666; font-family: monospace; }
+  .chat-header .status { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: #222; }
+  .chat-header .status.connected { color: #4ade80; }
+  .chat-header .status.streaming { color: #facc15; }
+
+  .toolbar { padding: 8px 24px; background: #1a1a1a; border-bottom: 1px solid #2a2a2a; display: flex; gap: 8px; align-items: center; flex-shrink: 0; flex-wrap: wrap; }
+  .toolbar label { font-size: 12px; color: #888; }
+  .toolbar input, .toolbar select { background: #222; border: 1px solid #333; color: #e0e0e0; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+  .toolbar input[type="text"] { width: 200px; }
+  .toolbar input[type="checkbox"] { accent-color: #6366f1; }
+  .toolbar button { background: #6366f1; color: #fff; border: none; padding: 4px 12px; border-radius: 4px; font-size: 12px; cursor: pointer; }
+  .toolbar button:hover { background: #4f46e5; }
+  .toolbar button.danger { background: #dc2626; }
+  .toolbar button.danger:hover { background: #b91c1c; }
+
+  .chat-messages { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+
+  .msg { max-width: 80%; padding: 12px 16px; border-radius: 12px; font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; background: #6366f1; color: #fff; border-bottom-right-radius: 4px; }
+  .msg.assistant { align-self: flex-start; background: #1e1e1e; border: 1px solid #2a2a2a; border-bottom-left-radius: 4px; }
+  .msg.system { align-self: center; background: transparent; color: #555; font-size: 12px; font-style: italic; }
+  .msg.tool { align-self: flex-start; background: #1a2332; border: 1px solid #1e3a5f; font-family: monospace; font-size: 12px; max-width: 90%; }
+  .msg .tool-label { color: #60a5fa; font-weight: 600; margin-bottom: 4px; display: block; font-size: 11px; text-transform: uppercase; }
+  .msg .token-info { font-size: 11px; color: #666; margin-top: 8px; }
+
+  .streaming-cursor::after { content: '▊'; animation: blink 0.8s infinite; color: #6366f1; }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+  .chat-input { padding: 16px 24px; background: #1a1a1a; border-top: 1px solid #2a2a2a; display: flex; gap: 12px; flex-shrink: 0; }
+  .chat-input textarea { flex: 1; background: #222; border: 1px solid #333; color: #e0e0e0; padding: 10px 14px; border-radius: 8px; font-size: 14px; font-family: inherit; resize: none; min-height: 44px; max-height: 120px; }
+  .chat-input textarea:focus { outline: none; border-color: #6366f1; }
+  .chat-input button { background: #6366f1; color: #fff; border: none; padding: 0 20px; border-radius: 8px; font-size: 14px; cursor: pointer; white-space: nowrap; }
+  .chat-input button:hover { background: #4f46e5; }
+  .chat-input button:disabled { background: #333; color: #666; cursor: not-allowed; }
+
+  .event-log { max-height: 200px; overflow-y: auto; padding: 8px 24px; background: #111; border-top: 1px solid #2a2a2a; font-family: monospace; font-size: 11px; color: #555; flex-shrink: 0; display: none; }
+  .event-log.visible { display: block; }
+  .event-log div { padding: 1px 0; }
+  .event-log .ev-content { color: #4ade80; }
+  .event-log .ev-tool { color: #60a5fa; }
+  .event-log .ev-error { color: #f87171; }
+  .event-log .ev-meta { color: #888; }
+</style>
+</head>
+<body>
+
+<div class="chat-header">
+  <h1>Chat Test</h1>
+  <span class="session-id" id="sessionIdDisplay">No session</span>
+  <span class="status" id="statusBadge">idle</span>
+  <div style="flex:1"></div>
+  <label style="font-size:12px; color:#888; display:flex; align-items:center; gap:4px;">
+    <input type="checkbox" id="showLog" onchange="document.getElementById('eventLog').classList.toggle('visible', this.checked)">
+    Event Log
+  </label>
+</div>
+
+<div class="toolbar">
+  <label>API:</label>
+  <input type="text" id="apiBase" value="http://localhost:8000/api/v1" />
+  <label>System Prompt:</label>
+  <input type="text" id="systemPrompt" value="" placeholder="Optional" />
+  <label><input type="checkbox" id="useTools"> Tools</label>
+  <label><input type="checkbox" id="useStream" checked> Stream</label>
+  <button onclick="createSession()">New Session</button>
+  <button class="danger" onclick="deleteSession()">Delete</button>
+</div>
+
+<div class="chat-messages" id="messages"></div>
+
+<div class="event-log" id="eventLog"></div>
+
+<div class="chat-input">
+  <textarea id="input" placeholder="Type a message... (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
+  <button id="sendBtn" onclick="sendMessage()">Send</button>
+</div>
+
+<script>
+const API = () => document.getElementById('apiBase').value.replace(/\/+$/, '');
+let sessionId = null;
+let isStreaming = false;
+
+const $messages = document.getElementById('messages');
+const $input = document.getElementById('input');
+const $sendBtn = document.getElementById('sendBtn');
+const $sessionId = document.getElementById('sessionIdDisplay');
+const $status = document.getElementById('statusBadge');
+const $eventLog = document.getElementById('eventLog');
+
+$input.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+$input.addEventListener('input', () => {
+  $input.style.height = 'auto';
+  $input.style.height = Math.min($input.scrollHeight, 120) + 'px';
+});
+
+function setStatus(text, cls = '') {
+  $status.textContent = text;
+  $status.className = 'status ' + cls;
+}
+
+function logEvent(text, cls = 'ev-meta') {
+  const d = document.createElement('div');
+  d.className = cls;
+  d.textContent = `[${new Date().toLocaleTimeString()}] ${text}`;
+  $eventLog.appendChild(d);
+  $eventLog.scrollTop = $eventLog.scrollHeight;
+}
+
+function addMessage(role, content, extra = '') {
+  const div = document.createElement('div');
+  div.className = `msg ${role}`;
+  div.textContent = content;
+  if (extra) {
+    const info = document.createElement('div');
+    info.className = 'token-info';
+    info.textContent = extra;
+    div.appendChild(info);
+  }
+  $messages.appendChild(div);
+  $messages.scrollTop = $messages.scrollHeight;
+  return div;
+}
+
+function addToolMessage(label, content) {
+  const div = document.createElement('div');
+  div.className = 'msg tool';
+  const lbl = document.createElement('span');
+  lbl.className = 'tool-label';
+  lbl.textContent = label;
+  div.appendChild(lbl);
+  div.appendChild(document.createTextNode(typeof content === 'string' ? content : JSON.stringify(content, null, 2)));
+  $messages.appendChild(div);
+  $messages.scrollTop = $messages.scrollHeight;
+}
+
+async function createSession() {
+  const systemPrompt = document.getElementById('systemPrompt').value;
+  const useTools = document.getElementById('useTools').checked;
+  try {
+    const res = await fetch(`${API()}/chat/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: 'Test Chat', system_prompt: systemPrompt, use_tools: useTools }),
+    });
+    const data = await res.json();
+    sessionId = data.id;
+    $sessionId.textContent = sessionId;
+    $messages.innerHTML = '';
+    addMessage('system', `Session created: ${sessionId}`);
+    if (systemPrompt) addMessage('system', `System: ${systemPrompt}`);
+    if (useTools) addMessage('system', 'Tools enabled');
+    setStatus('ready', 'connected');
+    logEvent(`Session created: ${sessionId}`);
+  } catch (e) {
+    addMessage('system', `Error: ${e.message}`);
+    logEvent(`Error: ${e.message}`, 'ev-error');
+  }
+}
+
+async function deleteSession() {
+  if (!sessionId) return;
+  try {
+    await fetch(`${API()}/chat/sessions/${sessionId}`, { method: 'DELETE' });
+    addMessage('system', `Session deleted: ${sessionId}`);
+    logEvent(`Session deleted: ${sessionId}`);
+    sessionId = null;
+    $sessionId.textContent = 'No session';
+    setStatus('idle');
+  } catch (e) {
+    addMessage('system', `Error: ${e.message}`);
+  }
+}
+
+async function sendMessage() {
+  if (!sessionId) { alert('Create a session first'); return; }
+  const content = $input.value.trim();
+  if (!content || isStreaming) return;
+
+  $input.value = '';
+  $input.style.height = 'auto';
+  addMessage('user', content);
+
+  const useStream = document.getElementById('useStream').checked;
+
+  if (useStream) {
+    await sendStream(content);
+  } else {
+    await sendNormal(content);
+  }
+}
+
+async function sendNormal(content) {
+  $sendBtn.disabled = true;
+  setStatus('waiting...', 'streaming');
+  logEvent(`Sending (non-stream): ${content.substring(0, 50)}...`);
+  try {
+    const res = await fetch(`${API()}/chat/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, stream: false }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Request failed');
+    addMessage('assistant', data.content, `tokens: ${data.input_tokens} in / ${data.output_tokens} out | stop: ${data.stop_reason}`);
+    if (data.tool_calls?.length) {
+      addToolMessage('Tool Calls', data.tool_calls);
+    }
+    logEvent(`Response received, tokens: ${data.input_tokens}+${data.output_tokens}`);
+  } catch (e) {
+    addMessage('system', `Error: ${e.message}`);
+    logEvent(`Error: ${e.message}`, 'ev-error');
+  }
+  $sendBtn.disabled = false;
+  setStatus('ready', 'connected');
+}
+
+async function sendStream(content) {
+  isStreaming = true;
+  $sendBtn.disabled = true;
+  setStatus('streaming', 'streaming');
+  logEvent(`Sending (stream): ${content.substring(0, 50)}...`);
+
+  let assistantDiv = null;
+  let accumulatedText = '';
+
+  try {
+    const res = await fetch(`${API()}/chat/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, stream: true }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(err);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop();
+
+      for (const part of parts) {
+        if (!part.trim()) continue;
+        let eventType = '';
+        let dataStr = '';
+        for (const line of part.split('\n')) {
+          if (line.startsWith('event: ')) eventType = line.slice(7);
+          else if (line.startsWith('data: ')) dataStr = line.slice(6);
+        }
+        if (!eventType || !dataStr) continue;
+
+        let data;
+        try { data = JSON.parse(dataStr); } catch { continue; }
+
+        switch (eventType) {
+          case 'message_start':
+            logEvent(`message_start: ${data.session_id}`, 'ev-meta');
+            break;
+
+          case 'content_delta':
+            if (!assistantDiv) {
+              assistantDiv = addMessage('assistant', '');
+              assistantDiv.classList.add('streaming-cursor');
+            }
+            accumulatedText += data.text;
+            assistantDiv.textContent = accumulatedText;
+            $messages.scrollTop = $messages.scrollHeight;
+            logEvent(`delta: "${data.text}"`, 'ev-content');
+            break;
+
+          case 'tool_use_start':
+            addToolMessage(`Tool Call: ${data.name}`, data.input);
+            logEvent(`tool_use_start: ${data.name}(${JSON.stringify(data.input)})`, 'ev-tool');
+            break;
+
+          case 'tool_use_result':
+            addToolMessage(`Tool Result: ${data.name}${data.is_error ? ' (ERROR)' : ''}`, data.result);
+            logEvent(`tool_use_result: ${data.name} -> ${JSON.stringify(data.result).substring(0, 100)}`, 'ev-tool');
+            break;
+
+          case 'message_end':
+            if (assistantDiv) {
+              assistantDiv.classList.remove('streaming-cursor');
+              const info = document.createElement('div');
+              info.className = 'token-info';
+              info.textContent = `tokens: ${data.input_tokens} in / ${data.output_tokens} out | stop: ${data.stop_reason}`;
+              assistantDiv.appendChild(info);
+            }
+            logEvent(`message_end: ${data.stop_reason}, tokens: ${data.input_tokens}+${data.output_tokens}`, 'ev-meta');
+            break;
+
+          case 'error':
+            addMessage('system', `Error: ${data.message}`);
+            logEvent(`error: ${data.message}`, 'ev-error');
+            break;
+        }
+      }
+    }
+  } catch (e) {
+    addMessage('system', `Stream error: ${e.message}`);
+    logEvent(`Stream error: ${e.message}`, 'ev-error');
+    if (assistantDiv) assistantDiv.classList.remove('streaming-cursor');
+  }
+
+  isStreaming = false;
+  $sendBtn.disabled = false;
+  setStatus('ready', 'connected');
+}
+</script>
+</body>
+</html>

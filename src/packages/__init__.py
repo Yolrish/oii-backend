@@ -1,30 +1,14 @@
 """
-Packages 模块包
+Packages 基础能力模块
 
-包含独立的功能模块：
+独立、可复用的基础功能模块（不含业务编排逻辑）：
 - ffmpeg: 视频处理工具（视频信息、拼接、混音等）
 - log: 日志服务（支持多 Provider 的日志写入）
 - shell: 命令行执行器（支持并发、实时输出）
-- workflow: 动态工作流（Step 串行、Task 并行、生命周期回调）
+- tool_call: 工具注册与执行
+- claude: Claude 对话 SDK 封装
 
-使用示例：
-    # FFmpeg 模块
-    from packages.ffmpeg import create_ffmpeg_service
-    service = create_ffmpeg_service()
-    info = service.get_video_info("video.mp4")
-
-    # Log 模块
-    from packages.log import LogService, create_default_log_service
-    service = create_default_log_service()
-    service.init()
-    service.info("Hello")
-
-    # Shell 模块
-    from packages.shell import run, ShellExecutor
-    result = run("git status")
-    # 或使用执行器
-    executor = ShellExecutor()
-    result = executor.run("echo hello", on_stdout=print)
+业务编排模块（chat、workflow）已迁移到 features/ 下。
 """
 
 # FFmpeg 模块
@@ -87,41 +71,6 @@ from .shell import (
     run_async as shell_run_async,
 )
 
-# Workflow 模块
-from .workflow import (
-    WorkflowConfig,
-    default_config as workflow_default_config,
-    Task,
-    TaskResultContent,
-    TaskResultType,
-    Step,
-    Workflow,
-    StepResult,
-    TaskResult,
-    WorkflowResult,
-    resolve_handler,
-    TaskSpec,
-    StepSpec,
-    WorkflowSpec,
-    parse_ai_workflow,
-    parse_ai_workflow_from_dict,
-    workflow_to_spec,
-    workflow_spec_to_dict,
-    dict_to_workflow_spec,
-    save_workflow_spec,
-    save_workflow_meta,
-    load_workflow_spec,
-    load_workflow_from_db,
-    update_workflow_spec,
-    save_workflow_task_result,
-    delete_workflow_cascade,
-    workflow_to_doc,
-    doc_to_workflow,
-    WorkflowService,
-    create_workflow_service,
-    get_default_service as get_workflow_service,
-)
-
 __all__ = [
     # ===== FFmpeg =====
     # 配置
@@ -174,38 +123,6 @@ __all__ = [
     # 快捷函数
     "shell_run",
     "shell_run_async",
-    # ===== Workflow =====
-    "WorkflowConfig",
-    "workflow_default_config",
-    "Task",
-    "TaskResultContent",
-    "TaskResultType",
-    "Step",
-    "Workflow",
-    "StepResult",
-    "TaskResult",
-    "WorkflowResult",
-    "resolve_handler",
-    "TaskSpec",
-    "StepSpec",
-    "WorkflowSpec",
-    "parse_ai_workflow",
-    "parse_ai_workflow_from_dict",
-    "workflow_to_spec",
-    "workflow_spec_to_dict",
-    "dict_to_workflow_spec",
-    "save_workflow_spec",
-    "save_workflow_meta",
-    "load_workflow_spec",
-    "load_workflow_from_db",
-    "update_workflow_spec",
-    "save_workflow_task_result",
-    "delete_workflow_cascade",
-    "workflow_to_doc",
-    "doc_to_workflow",
-    "WorkflowService",
-    "create_workflow_service",
-    "get_workflow_service",
 ]
 
 __version__ = "1.0.0"

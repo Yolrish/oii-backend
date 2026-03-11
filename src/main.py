@@ -19,8 +19,8 @@ from packages.log import (
 from api.v1.router import api_router
 from core.mongodb import connect_mongodb, close_mongodb
 from core.config import MongoDBConfig
-from packages.workflow import create_workflow_service
-from packages.workflow.configs import WorkflowConfig
+from features.workflow import create_workflow_service
+from features.workflow.configs import WorkflowConfig
 
 
 @asynccontextmanager
