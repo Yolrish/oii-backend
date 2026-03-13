@@ -7,6 +7,7 @@
 
 from typing import Optional
 
+import httpx
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -15,6 +16,9 @@ from ..configs.config import AuthConfig
 from ..models.models import User, UserRole
 from ..providers.auth0 import Auth0Provider
 from ..services.service import UserService
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # Bearer token 提取
 _bearer_scheme = HTTPBearer(auto_error=False)
@@ -50,6 +54,7 @@ async def get_current_user(
     3. 从 DB 获取用户（不存在则从 Auth0 拉取并创建）
     """
     if not credentials:
+        logger.debug("[AuthDeps] 请求未携带 Bearer Token")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
@@ -57,12 +62,22 @@ async def get_current_user(
         )
 
     token = credentials.credentials
+    logger.debug("[AuthDeps] 收到 Bearer Token (前16字符: %s...)", token[:16] if len(token) > 16 else token)
     config = _get_config()
     auth0 = _get_auth0()
 
     try:
         payload = await auth0.verify_token(token)
+    except httpx.HTTPStatusError as e:
+        # /userinfo 返回 401/403 等，说明 Token 无效或已过期
+        logger.warning("[AuthDeps] Token 远程验证失败 (HTTP %s): %s", e.response.status_code, e)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     except Exception as e:
+        logger.warning("[AuthDeps] Token 验证失败: %s", e)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid token: {e}",
@@ -71,14 +86,17 @@ async def get_current_user(
 
     auth0_id = payload.get("sub", "")
     if not auth0_id:
+        logger.warning("[AuthDeps] Token payload 缺少 sub 字段")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token missing sub claim",
         )
 
+    logger.debug("[AuthDeps] Token 验证通过，查找/创建用户 auth0_id=%s", auth0_id)
     db = get_database()
     svc = UserService(db, config, auth0)
     user = await svc.get_or_create_by_token(auth0_id, token)
+    logger.debug("[AuthDeps] 认证完成 user_id=%s | role=%s", user.id, user.role)
     return user
 
 
@@ -87,10 +105,12 @@ async def get_optional_user(
 ) -> Optional[User]:
     """可选认证：有 token 则返回 User，无则返回 None"""
     if not credentials:
+        logger.debug("[AuthDeps] 可选认证：未携带 Token，返回 None")
         return None
     try:
         return await get_current_user(credentials)
     except HTTPException:
+        logger.debug("[AuthDeps] 可选认证：Token 无效，返回 None")
         return None
 
 
@@ -99,6 +119,7 @@ async def require_admin(
 ) -> User:
     """要求管理员权限"""
     if user.role != UserRole.ADMIN:
+        logger.warning("[AuthDeps] 权限不足 user_id=%s role=%s，需要 admin", user.id, user.role)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required",

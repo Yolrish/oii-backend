@@ -8,6 +8,9 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from load_env import load_module_env
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -43,13 +46,28 @@ class AuthConfig:
     def from_env(cls) -> "AuthConfig":
         load_module_env(__file__)
         algos = os.getenv("AUTH0_ALGORITHMS", "RS256")
-        return cls(
+        config = cls(
             domain=os.getenv("AUTH0_DOMAIN", cls.domain),
             audience=os.getenv("AUTH0_AUDIENCE", cls.audience),
             client_id=os.getenv("AUTH0_CLIENT_ID", cls.client_id),
             algorithms=[a.strip() for a in algos.split(",")],
             collection=os.getenv("AUTH_USER_COLLECTION", cls.collection),
         )
+        # 打印加载的配置，client_id 脱敏
+        masked_cid = (
+            f"{config.client_id[:6]}...{config.client_id[-4:]}"
+            if len(config.client_id) > 10
+            else config.client_id or "(空)"
+        )
+        logger.debug(
+            "[Auth] 配置已加载 | domain=%s | audience=%s | client_id=%s | algorithms=%s | collection=%s",
+            config.domain or "(空)",
+            config.audience or "(空)",
+            masked_cid,
+            config.algorithms,
+            config.collection,
+        )
+        return config
 
 
 default_config = AuthConfig()

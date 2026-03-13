@@ -13,14 +13,17 @@ import load_env  # noqa: F401, E402
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from packages.log import (
-    create_default_log_service,
-)
+from utils.logger import setup_logging, get_logger
+from packages.log import create_default_log_service
 from api.v1.router import api_router
 from core.mongodb import connect_mongodb, close_mongodb
 from core.config import MongoDBConfig
 from features.workflow import create_workflow_service
 from features.workflow.configs import WorkflowConfig
+
+# 全局日志初始化（尽早调用）
+setup_logging()
+logger = get_logger(__name__)
 
 
 @asynccontextmanager
@@ -30,15 +33,15 @@ async def lifespan(app: FastAPI):
     启动时执行初始化，关闭时执行清理
     """
     # ===== 启动时执行 =====
-    # log 服务初始化
+    # LogService 初始化（OpenSearch 等持久化日志）
     log_service = create_default_log_service()
     results = log_service.init(force=False)
-    print(f"LOG服务初始化结果: {results}")
+    logger.info("LogService 初始化结果: %s", results)
 
     # MongoDB 连接
     config = MongoDBConfig.from_env()
     await connect_mongodb(config)
-    print(f"MongoDB 已连接，数据库: {config.db_name}")
+    logger.info("MongoDB 已连接，数据库: %s", config.db_name)
 
     # Workflow 服务（注入 db，便于按需从 DB 加载）
     from core.mongodb import get_database
@@ -47,13 +50,13 @@ async def lifespan(app: FastAPI):
         config=workflow_config,
         db=get_database(),
     )
-    print(f"Workflow 服务已初始化，持久化: {workflow_config.persist_enabled}")
+    logger.info("Workflow 服务已初始化，持久化: %s", workflow_config.persist_enabled)
 
     yield
 
     # ===== 关闭时执行 =====
     await close_mongodb()
-    print("服务正在关闭...")
+    logger.info("服务正在关闭...")
 
 
 app = FastAPI(

@@ -11,6 +11,9 @@ from ..configs.config import AuthConfig
 from ..models.models import User, UserRole
 from ..providers.auth0 import Auth0Provider
 from ..repositories import repository as repo
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class UserService:
@@ -38,16 +41,17 @@ class UserService:
 
         在认证依赖中调用：每次请求验证 token 后，用此方法获取本地用户。
         """
+        logger.debug("[UserService] 查找用户 auth0_id=%s | collection=%s", auth0_id, self.config.collection)
         user = await repo.load_user_by_auth0_id(
             self.db, self.config.collection, auth0_id,
         )
         if user:
-            # 更新最后登录时间
+            logger.debug("[UserService] 已找到用户 id=%s，更新 last_login", user.id)
             user.last_login_at = datetime.utcnow()
             await repo.update_user(self.db, self.config.collection, user)
             return user
 
-        # 从 Auth0 获取完整用户信息
+        logger.debug("[UserService] 未找到用户，从 Auth0 获取 userinfo 并创建新用户...")
         userinfo = await self.auth0.get_userinfo(access_token)
         user = User(
             auth0_id=auth0_id,
@@ -56,6 +60,7 @@ class UserService:
             avatar=userinfo.get("picture", ""),
         )
         await repo.save_user(self.db, self.config.collection, user)
+        logger.debug("[UserService] 新用户已创建 id=%s | email=%s", user.id, user.email)
         return user
 
     async def get_by_id(self, user_id: str) -> Optional[User]:
@@ -88,14 +93,17 @@ class UserService:
 
     async def sync_from_auth0(self, user_id: str, access_token: str) -> Optional[User]:
         """主动从 Auth0 同步用户信息"""
+        logger.debug("[UserService] 同步 Auth0 信息 user_id=%s", user_id)
         user = await self.get_by_id(user_id)
         if not user:
+            logger.warning("[UserService] 同步失败，用户不存在 user_id=%s", user_id)
             return None
         userinfo = await self.auth0.get_userinfo(access_token)
         user.email = userinfo.get("email", user.email)
         user.nickname = userinfo.get("nickname", userinfo.get("name", user.nickname))
         user.avatar = userinfo.get("picture", user.avatar)
         await repo.update_user(self.db, self.config.collection, user)
+        logger.debug("[UserService] 同步完成 user_id=%s | email=%s", user.id, user.email)
         return user
 
     async def list_users(
