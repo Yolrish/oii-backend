@@ -59,7 +59,9 @@ class Auth0Provider:
         """从 JWKS 中找到与 token header kid 匹配的公钥"""
         unverified_header = jwt.get_unverified_header(token)
         kid = unverified_header.get("kid")
-        logger.debug("[Auth0] Token header: alg=%s, kid=%s", unverified_header.get("alg"), kid)
+        logger.debug(
+            "[Auth0] Token header: alg=%s, kid=%s", unverified_header.get("alg"), kid
+        )
         if not kid:
             logger.warning("[Auth0] Token header 缺少 kid")
             raise jwt.InvalidTokenError("Token header missing kid")
@@ -101,7 +103,9 @@ class Auth0Provider:
             "picture": info.get("picture"),
             "email_verified": info.get("email_verified"),
         }
-        logger.debug("[Auth0] /userinfo 验证通过 | sub=%s | email=%s", sub, info.get("email"))
+        logger.debug(
+            "[Auth0] /userinfo 验证通过 | sub=%s | email=%s", sub, info.get("email")
+        )
         return payload
 
     async def verify_token(self, token: str) -> Dict[str, Any]:
@@ -118,7 +122,10 @@ class Auth0Provider:
             jwt.InvalidTokenError: Token 无效
             httpx.HTTPStatusError: /userinfo 请求失败（Token 无效）
         """
-        logger.debug("[Auth0] 开始验证 Token (前16字符: %s...)", token[:16] if len(token) > 16 else token)
+        logger.debug(
+            "[Auth0] 开始验证 Token (前16字符: %s...)",
+            token[:16] if len(token) > 16 else token,
+        )
 
         # 不透明 Token → 走 /userinfo 远程验证
         if self._is_opaque_token(token):
@@ -126,8 +133,12 @@ class Auth0Provider:
             return await self._verify_via_userinfo(token)
 
         # 标准 JWT → 走 JWKS 本地验证
-        logger.debug("[Auth0] 标准 JWT，走 JWKS 本地验证 | audience=%s | issuer=%s | algorithms=%s",
-                     self.config.audience, self.config.issuer, self.config.algorithms)
+        logger.debug(
+            "[Auth0] 标准 JWT，走 JWKS 本地验证 | audience=%s | issuer=%s | algorithms=%s",
+            self.config.audience,
+            self.config.issuer,
+            self.config.algorithms,
+        )
         jwks = await self._fetch_jwks()
         signing_key = self._get_signing_key(jwks, token)
         try:
@@ -137,14 +148,21 @@ class Auth0Provider:
                 algorithms=self.config.algorithms,
                 audience=self.config.audience,
                 issuer=self.config.issuer,
+                leeway=10,  # 10秒的误差时间
             )
-            logger.debug("[Auth0] Token 验证通过 | sub=%s | exp=%s", payload.get("sub"), payload.get("exp"))
+            logger.debug(
+                "[Auth0] Token 验证通过 | sub=%s | exp=%s",
+                payload.get("sub"),
+                payload.get("exp"),
+            )
             return payload
         except jwt.ExpiredSignatureError:
             logger.warning("[Auth0] Token 已过期")
             raise
         except jwt.InvalidAudienceError:
-            logger.warning("[Auth0] Token audience 不匹配，期望: %s", self.config.audience)
+            logger.warning(
+                "[Auth0] Token audience 不匹配，期望: %s", self.config.audience
+            )
             raise
         except jwt.InvalidIssuerError:
             logger.warning("[Auth0] Token issuer 不匹配，期望: %s", self.config.issuer)
@@ -170,7 +188,11 @@ class Auth0Provider:
                 )
                 resp.raise_for_status()
                 info = resp.json()
-                logger.debug("[Auth0] userinfo 获取成功 | sub=%s | email=%s", info.get("sub"), info.get("email"))
+                logger.debug(
+                    "[Auth0] userinfo 获取成功 | sub=%s | email=%s",
+                    info.get("sub"),
+                    info.get("email"),
+                )
                 return info
         except httpx.HTTPError as e:
             logger.error("[Auth0] userinfo 获取失败: %s", e)
