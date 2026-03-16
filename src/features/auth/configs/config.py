@@ -29,6 +29,8 @@ class AuthConfig:
     collection: str = "users"
     # JWKS 缓存时间（秒）
     jwks_cache_ttl: int = 3600
+    # Token 时间容差（秒），用于兼容客户端与服务端的时钟偏差
+    token_leeway: int = 5
 
     @property
     def issuer(self) -> str:
@@ -52,6 +54,7 @@ class AuthConfig:
             client_id=os.getenv("AUTH0_CLIENT_ID", cls.client_id),
             algorithms=[a.strip() for a in algos.split(",")],
             collection=os.getenv("AUTH_USER_COLLECTION", cls.collection),
+            token_leeway=int(os.getenv("AUTH0_TOKEN_LEEWAY", cls.token_leeway)),
         )
         # 打印加载的配置，client_id 脱敏
         masked_cid = (

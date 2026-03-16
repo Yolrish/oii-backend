@@ -6,9 +6,9 @@
 
 ```
 features/auth/
-├── configs/config.py              # Auth0 域名、audience、JWKS URL
+├── configs/config.py              # Auth0 配置（域名、audience、leeway 等）
 ├── models/models.py               # User 数据模型
-├── providers/auth0.py             # Token 验证（JWKS 公钥）+ /userinfo 获取
+├── providers/auth0.py             # Token 验证（JWKS / userinfo 双模式）
 ├── repositories/repository.py     # MongoDB 用户 CRUD
 ├── services/service.py            # UserService
 ├── api/
@@ -19,17 +19,23 @@ features/auth/
 
 ## 认证流程
 
+支持两种 Token 验证模式，自动识别：
+
 ```
 前端 auth0-spa-js 登录 → 获取 Access Token
     → 请求后端（Bearer Token）
     → deps.py: get_current_user
-        → Auth0Provider.verify_token（JWKS 公钥验证签名、过期、audience）
+        → Auth0Provider.verify_token
+            ├─ 标准 JWT（alg=RS256, 有 kid）→ JWKS 本地验证（签名、过期、audience）
+            └─ 不透明 Token（alg=dir）→ 调用 /userinfo 远程验证
         → UserService.get_or_create_by_token
             → 查 MongoDB（auth0_id）
             → 有 → 更新 last_login → 返回 User
             → 无 → 调 Auth0 /userinfo → 创建用户 → 返回 User
     → 路由拿到 User 对象
 ```
+
+> 推荐前端配置 `audience`，使 Auth0 返回 RS256 JWT，走本地验证性能更好。
 
 ## 认证依赖
 
@@ -86,13 +92,25 @@ User:
 
 ## 配置项（.env）
 
-| 变量 | 说明 | 必填 |
-|------|------|------|
-| `AUTH0_DOMAIN` | Auth0 租户域名 | 是 |
-| `AUTH0_AUDIENCE` | API Audience | 是 |
-| `AUTH0_CLIENT_ID` | 应用 Client ID | 是 |
-| `AUTH0_ALGORITHMS` | 签名算法 | 否（默认 RS256） |
-| `AUTH_USER_COLLECTION` | MongoDB 集合名 | 否（默认 users） |
+| 变量 | 说明 | 必填 | 默认值 |
+|------|------|------|--------|
+| `AUTH0_DOMAIN` | Auth0 租户域名 | 是 | - |
+| `AUTH0_AUDIENCE` | API Audience（需在 Auth0 Dashboard 注册） | 是 | - |
+| `AUTH0_CLIENT_ID` | 应用 Client ID | 是 | - |
+| `AUTH0_ALGORITHMS` | Token 签名算法 | 否 | `RS256` |
+| `AUTH0_TOKEN_LEEWAY` | Token 时间容差（秒），兼容时钟偏差 | 否 | `5` |
+| `AUTH_USER_COLLECTION` | MongoDB 用户集合名 | 否 | `users` |
+
+## 日志
+
+模块使用 `utils.logger` 统一日志工具，关键节点均有 DEBUG 级别日志输出：
+
+- **配置加载**：打印 domain、audience、client_id（脱敏）等参数
+- **Token 验证**：JWKS 获取、公钥匹配、时间诊断（iat/exp 与本地时间差值）、验证结果
+- **用户操作**：查找/创建/同步用户
+- **认证依赖**：请求认证流程、权限校验
+
+WARNING 及以上级别的日志会自动桥接到 LogService（OpenSearch）持久化存储。
 
 ## 与其他模块的集成
 

@@ -139,6 +139,19 @@ class Auth0Provider:
             self.config.issuer,
             self.config.algorithms,
         )
+        # 先解码 payload（不验证），打印时间差用于诊断
+        try:
+            unverified = jwt.decode(token, options={"verify_signature": False, "verify_aud": False})
+            iat = unverified.get("iat", 0)
+            exp = unverified.get("exp", 0)
+            now = int(time.time())
+            logger.debug(
+                "[Auth0] 时间诊断 | now=%s | iat=%s | exp=%s | now-iat=%+ds | exp-now=%+ds",
+                now, iat, exp, now - iat, exp - now,
+            )
+        except Exception:
+            pass
+
         jwks = await self._fetch_jwks()
         signing_key = self._get_signing_key(jwks, token)
         try:
@@ -148,7 +161,7 @@ class Auth0Provider:
                 algorithms=self.config.algorithms,
                 audience=self.config.audience,
                 issuer=self.config.issuer,
-                leeway=10,  # 10秒的误差时间
+                leeway=self.config.token_leeway,
             )
             logger.debug(
                 "[Auth0] Token 验证通过 | sub=%s | exp=%s",
