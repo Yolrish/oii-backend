@@ -37,6 +37,14 @@
 - 6 种事件：`message_start`、`content_delta`、`tool_use_start`、`tool_use_result`、`message_end`、`error`
 - chat API 通过 `stream=true` 参数启用
 
+## Twitter/X API 规范
+
+- `packages/twitter` 封装 X (Twitter) 官方 API v2
+- **认证方式**：OAuth 1.0a（发推、点赞等写操作）、Bearer Token（搜索、查询等只读操作）
+- **主要功能**：发送/删除推文、搜索推文、查询用户、时间线、点赞/转推、关注/取关
+- **环境变量**：`TWITTER_API_KEY`、`TWITTER_API_SECRET`、`TWITTER_ACCESS_TOKEN`、`TWITTER_ACCESS_TOKEN_SECRET`、`TWITTER_BEARER_TOKEN`
+- 使用 `httpx` 作为异步 HTTP 客户端，OAuth 1.0a 签名基于 RFC 5849 内置实现
+
 ## 认证规范
 
 - `features/auth` 基于 Auth0 SPA 模式（Authorization Code + PKCE）

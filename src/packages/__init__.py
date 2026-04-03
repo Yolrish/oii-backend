@@ -7,6 +7,7 @@ Packages 基础能力模块
 - shell: 命令行执行器（支持并发、实时输出）
 - tool_call: 工具注册与执行
 - claude: Claude 对话 SDK 封装
+- twitter: X (Twitter) 官方 API v2 封装
 
 业务编排模块（chat、workflow）已迁移到 features/ 下。
 """
@@ -71,6 +72,18 @@ from .shell import (
     run_async as shell_run_async,
 )
 
+# Twitter 模块
+from .twitter import (
+    TwitterConfig,
+    TwitterClient,
+    Tweet,
+    User,
+    TweetList,
+    TwitterError,
+    get_default_client as get_twitter_client,
+    create_twitter_client,
+)
+
 __all__ = [
     # ===== FFmpeg =====
     # 配置
@@ -123,6 +136,15 @@ __all__ = [
     # 快捷函数
     "shell_run",
     "shell_run_async",
+    # ===== Twitter =====
+    "TwitterConfig",
+    "TwitterClient",
+    "Tweet",
+    "User",
+    "TweetList",
+    "TwitterError",
+    "get_twitter_client",
+    "create_twitter_client",
 ]
 
 __version__ = "1.0.0"
