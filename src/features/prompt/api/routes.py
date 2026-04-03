@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 from core.mongodb import get_database
 from ..services.service import PromptService, create_prompt_service
 from ..models.models import PromptSource
+from features.auth.api.deps import get_current_user
+from features.auth.models.models import User
 
 prompt_router = APIRouter(prefix="/prompts", tags=["Prompts"])
 
@@ -91,6 +93,7 @@ async def render_prompt(
 @prompt_router.post("", summary="Create user prompt")
 async def create_prompt(
     req: CreatePromptRequest,
+    user: User = Depends(get_current_user),
     service: PromptService = Depends(_get_prompt_service),
 ) -> dict:
     tpl = await service.create(
@@ -107,6 +110,7 @@ async def create_prompt(
 async def update_prompt(
     prompt_id: str,
     req: UpdatePromptRequest,
+    user: User = Depends(get_current_user),
     service: PromptService = Depends(_get_prompt_service),
 ) -> dict:
     tpl = await service.update(
@@ -124,6 +128,7 @@ async def update_prompt(
 @prompt_router.delete("/{prompt_id}", summary="Delete user prompt")
 async def delete_prompt(
     prompt_id: str,
+    user: User = Depends(get_current_user),
     service: PromptService = Depends(_get_prompt_service),
 ) -> dict:
     ok = await service.delete(prompt_id)
